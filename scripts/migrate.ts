@@ -13,6 +13,10 @@ if (action === "diff") {
   });
   process.exit(await child.exited);
 }
+// The shared database hosts other applications' schemas. Without a schema-scoped URL Atlas
+// inspects the whole database and refuses to apply ("connected database is not clean").
+const scoped = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL) : undefined;
+scoped?.searchParams.set("search_path", "moviefinder");
 const commands: Record<string, string[]> = {
   apply: ["migrate", "apply", "--env", "app"],
   status: ["migrate", "status", "--env", "app"],
@@ -31,7 +35,7 @@ const commands: Record<string, string[]> = {
 const child = Bun.spawn(["atlas", ...commands[action]!], {
   stdout: "inherit",
   stderr: "inherit",
-  env: process.env,
+  env: scoped ? { ...process.env, DATABASE_URL: scoped.toString() } : process.env,
 });
 process.exit(await child.exited);
 

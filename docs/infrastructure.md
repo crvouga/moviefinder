@@ -84,6 +84,9 @@ on application `main`. It reads the merged platform inventory to verify schema
 ownership, uses GitHub OIDC to request only the production DATABASE_URL, validates
 the committed Atlas migrations and applies them inside the approved namespace.
 It never runs as part of local startup, image building or a pull request.
+The shared database also holds other applications' schemas, so `scripts/migrate.ts` scopes Atlas to
+`search_path=moviefinder`; an unscoped URL makes Atlas reject the database as "not clean" and
+apply nothing. Other schemas are never inspected or modified.
 The opaque dev/prd DATABASE_URL contracts currently resolve to the same platform
 foundation database; this request does not provision separate physical databases.
 Local development and automated tests remain isolated in embedded PostgreSQL.
