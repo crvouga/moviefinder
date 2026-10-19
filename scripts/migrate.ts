@@ -1,3 +1,4 @@
+import { schemaScopedUrl } from "../src/server/db/scope";
 // Atlas is the only migration writer and applier. Never infer shared allocation from a URL.
 const action = process.argv[2] ?? "status";
 if (!["apply", "status", "diff", "drift"].includes(action))
@@ -13,6 +14,11 @@ if (action === "diff") {
   });
   process.exit(await child.exited);
 }
+// Apply/status must be schema-scoped (see scope.ts); drift filters with atlas.hcl `schemas`.
+const scoped =
+  process.env.DATABASE_URL && action !== "drift"
+    ? schemaScopedUrl(process.env.DATABASE_URL)
+    : undefined;
 const commands: Record<string, string[]> = {
   apply: ["migrate", "apply", "--env", "app"],
   status: ["migrate", "status", "--env", "app"],
@@ -31,8 +37,6 @@ const commands: Record<string, string[]> = {
 const child = Bun.spawn(["atlas", ...commands[action]!], {
   stdout: "inherit",
   stderr: "inherit",
-  env: process.env,
+  env: scoped ? { ...process.env, DATABASE_URL: scoped } : process.env,
 });
 process.exit(await child.exited);
-
-export {};

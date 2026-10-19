@@ -58,8 +58,17 @@ jobs:
           name: browser-failure-evidence
           path: test-results/
           retention-days: 7
-  publish:
+  # Apply committed Atlas migrations to the production moviefinder schema before the new image
+  # is published, so a deployed version never runs against an older schema.
+  migrate:
     needs: [fast, integration, browser-and-container]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/migrate.yml
+  publish:
+    needs: [fast, integration, browser-and-container, migrate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
