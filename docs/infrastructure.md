@@ -84,9 +84,16 @@ on application `main`. It reads the merged platform inventory to verify schema
 ownership, uses GitHub OIDC to request only the production DATABASE_URL, validates
 the committed Atlas migrations and applies them inside the approved namespace.
 It never runs as part of local startup, image building or a pull request.
-The shared database also holds other applications' schemas, so `scripts/migrate.ts` scopes Atlas to
-`search_path=moviefinder`; an unscoped URL makes Atlas reject the database as "not clean" and
-apply nothing. Other schemas are never inspected or modified.
+The shared database also holds other applications' schemas, so everything this project does is
+confined to `moviefinder`. Atlas apply/status receive a URL with `search_path=moviefinder`
+(`src/server/db/scope.ts`); an unscoped URL makes Atlas reject the database as "not clean" and apply
+nothing. Application SQL is always schema-qualified, and the integration database runs with an
+empty `search_path` so any unqualified reference fails. Other schemas are never inspected or
+modified.
+
+On every push to `main`, `.github/workflows/check.yml` runs this same workflow (`migrate` job) after
+all validation jobs pass and before `publish`, so a new image is never released against an older
+schema. A failed migration blocks publishing. The workflow can still be dispatched manually.
 The opaque dev/prd DATABASE_URL contracts currently resolve to the same platform
 foundation database; this request does not provision separate physical databases.
 Local development and automated tests remain isolated in embedded PostgreSQL.

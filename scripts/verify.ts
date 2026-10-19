@@ -36,6 +36,10 @@ try {
   }
   if (!ready) throw new Error("Test PostgreSQL did not become ready");
   await db.execute(sql`create schema if not exists moviefinder`);
+  // Nothing may resolve outside the schema: unqualified names must fail, not hit public.
+  await db.execute(
+    sql`alter database ${sql.identifier(parsed.pathname.slice(1))} set search_path = ''`,
+  );
   await pool.end();
   await run([
     "atlas",

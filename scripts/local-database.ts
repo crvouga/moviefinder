@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 import pg from "pg";
 import { z } from "zod";
+import { schemaScopedUrl } from "../src/server/db/scope";
 
 async function availablePort() {
   const socket = createServer();
@@ -209,7 +210,7 @@ export async function migrateLocalDatabase(
         : ["migrate", action, "--env", "app"];
     const child = spawn("atlas", args, {
       stdio: "inherit",
-      env: { ...process.env, DATABASE_URL: url },
+      env: { ...process.env, DATABASE_URL: action === "drift" ? url : schemaScopedUrl(url) },
     });
     const code = await new Promise<number | null>((accept, reject) => {
       child.once("error", reject);
