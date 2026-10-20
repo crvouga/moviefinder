@@ -82,3 +82,42 @@ describe("shared navigation requests", () => {
     expect(load).toHaveBeenCalledTimes(3);
   });
 });
+describe("settled results", () => {
+  it("drops only matching results and keeps work in flight", async () => {
+    const pool = new RequestPool<string>(3);
+    await pool.run("entity:a", async () => "a");
+    await pool.run("discover:x", async () => "x");
+    const pending = deferred<string>();
+    const inflight = pool.run("entity:b", () => pending.promise);
+    pool.invalidate((key) => key.startsWith("entity:"));
+    expect(pool.has("entity:a")).toBe(false);
+    expect(pool.has("discover:x")).toBe(true);
+    expect(pool.has("entity:b")).toBe(true);
+    pending.resolve("b");
+    await expect(inflight).resolves.toBe("b");
+  });
+  it("answers from a primed result until it expires", async () => {
+    const pool = new RequestPool<string>(3);
+    pool.prime("entity:a", "primed", 60_000);
+    const load = vi.fn(async () => "loaded");
+    await expect(pool.run("entity:a", load, { speculative: true })).resolves.toBe("primed");
+    expect(load).not.toHaveBeenCalled();
+  });
+  it("makes a real request redo a speculative answer it cannot accept", async () => {
+    const pool = new RequestPool<string>(3);
+    const load = vi.fn(async () => "fresh");
+    await pool.run("entity:a", async () => "partial", { speculative: true, ttl: () => 60_000 });
+    await expect(pool.run("entity:a", load, { fresh: (value) => value === "fresh" })).resolves.toBe(
+      "fresh",
+    );
+    expect(load).toHaveBeenCalledTimes(1);
+    // The answer it obtained itself is reused.
+    await expect(pool.run("entity:a", load, { fresh: (value) => value === "fresh" })).resolves.toBe(
+      "fresh",
+    );
+    expect(load).toHaveBeenCalledTimes(1);
+    // Speculation never forces a second read.
+    await pool.run("entity:b", async () => "partial", { speculative: true, ttl: () => 60_000 });
+    await expect(pool.run("entity:b", load, { speculative: true })).resolves.toBe("partial");
+  });
+});

@@ -2,7 +2,7 @@ import { and, eq, or, ilike, desc, lt, inArray, sql } from "drizzle-orm";
 import type { Database } from "./db";
 import * as s from "./db/schema";
 import { rowEntity } from "./state";
-import { normalize } from "./entity-store/normalize";
+import { summaryOf } from "./entity-store/normalize";
 import { AppError } from "./log";
 import type { Entity } from "../shared/contracts";
 const publicUser = {
@@ -20,7 +20,7 @@ export function socialQueries(db: Database) {
       .select()
       .from(s.sources)
       .where(inArray(s.sources.id, [...new Set(ids)]));
-    return rows.flatMap((r) => normalize(r.id, r.payload, r.version));
+    return rows.flatMap((r) => summaryOf(r.id, r.payload, r.version));
   }
   return {
     async search(q: string, cursor = 0) {
@@ -90,7 +90,7 @@ export function socialQueries(db: Database) {
           records = titleIds.length
             ? await tx.select().from(s.sources).where(inArray(s.sources.id, titleIds))
             : [];
-        for (const r of records) entities.push(...normalize(r.id, r.payload, r.version));
+        for (const r of records) entities.push(...summaryOf(r.id, r.payload, r.version));
         const last = entries[199];
         return {
           entities,

@@ -1,5 +1,5 @@
 import { parseSearch, stringifySearch } from "../shared/search";
-import { useEffect, lazy, Suspense } from "react";
+import { useEffect, lazy, Suspense, Profiler, type ProfilerOnRenderCallback } from "react";
 import {
   createRootRoute,
   createRoute,
@@ -12,9 +12,31 @@ import {
 } from "@tanstack/react-router";
 import { Film } from "lucide-react";
 import { authClient } from "./auth-client";
+import { currentUserId, rememberUser } from "./session";
 import { report } from "./notifications";
 import { screenModules } from "./screen-modules";
 import { Toast } from "./components/toast";
+import { ViewerProvider } from "./components/viewer";
+import { track, telemetryEnabled } from "./telemetry";
+
+const commit: ProfilerOnRenderCallback = (id, phase, actual, base) => {
+  if (actual >= 8)
+    track("render", id, {
+      phase,
+      ms: Math.round(actual * 10) / 10,
+      base: Math.round(base),
+      path: location.pathname,
+    });
+};
+function Profiled({ id, children }: { id: string; children: React.ReactNode }) {
+  return telemetryEnabled ? (
+    <Profiler id={id} onRender={commit}>
+      {children}
+    </Profiler>
+  ) : (
+    children
+  );
+}
 
 const Navigation = lazy(() => import("./components/navigation"));
 let stateModule: Promise<typeof import("./state")> | undefined;
@@ -31,6 +53,9 @@ function Root() {
     navigate = useNavigate(),
     session = authClient.useSession(),
     isAuth = location.pathname.startsWith("/auth");
+  useEffect(() => {
+    if (!session.isPending) rememberUser(session.data?.user.id);
+  }, [session.isPending, session.data?.user.id]);
   useEffect(() => {
     if (!isAuth && !session.isPending && !session.data)
       void navigate({ to: "/auth", search: { returnTo: location.href }, replace: true });
@@ -55,7 +80,7 @@ function Root() {
       live = false;
       dispose?.();
     };
-  }, [session.data?.user.id, isAuth, location.href]);
+  }, [session.data?.user.id, isAuth]);
   if (isAuth)
     return (
       <>
@@ -87,30 +112,36 @@ function Root() {
       </main>
     );
   return (
-    <div className="app-shell">
-      <Suspense
-        fallback={
-          <div className="mobile-header">
-            <span className="brand">moviefinder.</span>
-          </div>
-        }
-      >
-        <Navigation userId={session.data.user.id} />
-      </Suspense>
-      <main className="app-main" id="main-content">
+    <ViewerProvider userId={session.data.user.id}>
+      <div className="app-shell">
         <Suspense
           fallback={
-            <div className="route-placeholder" aria-label="Opening this page">
-              <div className="skeleton-line wide" />
-              <div className="skeleton-line" />
+            <div className="mobile-header">
+              <span className="brand">moviefinder.</span>
             </div>
           }
         >
-          <Outlet />
+          <Profiled id="navigation">
+            <Navigation userId={session.data.user.id} />
+          </Profiled>
         </Suspense>
-      </main>
-      <Toast />
-    </div>
+        <main className="app-main" id="main-content">
+          <Suspense
+            fallback={
+              <div className="route-placeholder" aria-label="Opening this page">
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+              </div>
+            }
+          >
+            <Profiled id="screen">
+              <Outlet />
+            </Profiled>
+          </Suspense>
+        </main>
+        <Toast />
+      </div>
+    </ViewerProvider>
   );
 }
 function useCurrentUser() {
@@ -134,11 +165,11 @@ async function loadScreen({
   location: { href: string };
   abortController: AbortController;
 }) {
-  const session = await authClient.getSession();
-  if (!session.data || abortController.signal.aborted) return;
+  const userId = await currentUserId();
+  if (!userId || abortController.signal.aborted) return;
   try {
     const { prepareScreen } = await import("./preloading");
-    await prepareScreen(location.href, session.data.user.id, abortController.signal);
+    await prepareScreen(location.href, userId, abortController.signal);
   } catch (error) {
     if (!abortController.signal.aborted) report(error);
   }
@@ -215,6 +246,15 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
   }
+}
+if (telemetryEnabled) {
+  let began = 0;
+  router.subscribe("onBeforeNavigate", () => (began = performance.now()));
+  router.subscribe("onResolved", (e) =>
+    track("route", e.toLocation.pathname, {
+      ms: began ? Math.round(performance.now() - began) : undefined,
+    }),
+  );
 }
 export function App() {
   return <RouterProvider router={router} />;

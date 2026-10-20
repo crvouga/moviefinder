@@ -1,28 +1,16 @@
-import { feedParams, type Coverage } from "../shared/contracts";
-import { discover, loadEntity, loadSocial, collections, getEntity } from "./state";
+import { feedParams } from "../shared/contracts";
+import { discover, loadEntity, loadSocial, loadTitles, getEntity } from "./state";
 import { screenModules } from "./screen-modules";
+import { entityImages, warmImage } from "./images";
+import { track } from "./telemetry";
 
-function pause(signal: AbortSignal, ms: number) {
-  return new Promise<void>((resolve, reject) => {
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-  });
-}
 function localURL(href: string) {
   const url = new URL(href, window.location.origin);
   return url.origin === window.location.origin ? url : undefined;
 }
 
-// Route loaders await the first cache read; speculation continues until provider coverage arrives.
-// Both paths merge into the same collections and join the same cancellable HTTP requests.
+// Route loaders await the first cache read; speculation performs a single read. Both paths merge
+// into the same collections and join the same cancellable HTTP requests.
 export async function prepareScreen(
   href: string,
   userId: string,
@@ -72,16 +60,9 @@ export async function prepareScreen(
     default:
       return;
   }
-  const [, id] = await Promise.all([code, read?.(), social]);
-  if (!speculative || !read || !id) return;
-  // Server hydration is durable/shared. Cancel only this browser's interest and HTTP reads.
-  const deadline = Date.now() + 15_000;
-  while (!signal.aborted && Date.now() < deadline) {
-    const coverage = collections.query.get(id)?.data.coverage as Coverage | undefined;
-    if (!coverage || coverage.state === "complete" || coverage.state === "error") break;
-    await pause(signal, 750);
-    await read();
-  }
+  // Speculation performs one read. Server hydration is durable and shared, and live updates
+  // arrive over SSE, so browsers never poll to follow coverage.
+  await Promise.all([code, read?.(), social]);
 }
 
 function warmImages(href: string, signal: AbortSignal) {
@@ -89,60 +70,42 @@ function warmImages(href: string, signal: AbortSignal) {
   if (!url?.pathname.startsWith("/title/")) return;
   const entity = getEntity(decodeURIComponent(url.pathname.slice("/title/".length)));
   if (!entity) return;
-  const images: HTMLImageElement[] = [];
-  for (const [path, size] of [
-    [entity.poster, "w500"],
-    [entity.backdrop, "w1280"],
-  ] as const) {
-    if (!path) continue;
-    const image = new Image();
-    image.fetchPriority = "low";
-    if (size === "w500" && !path.startsWith("https://")) {
-      image.sizes = "(max-width: 600px) 90vw, 420px";
-      image.srcset = ["w342", "w500", "w780"]
-        .map((s) => `https://image.tmdb.org/t/p/${s}${path} ${s.slice(1)}w`)
-        .join(", ");
-    }
-    image.src = path.startsWith("https://") ? path : `https://image.tmdb.org/t/p/${size}${path}`;
-    images.push(image);
-  }
-  const cancel = () =>
-    images.forEach((image) => {
-      image.removeAttribute("srcset");
-      image.removeAttribute("src");
-    });
+  const sources = entityImages(entity);
+  // The same slots the detail page renders, so these requests are the ones it will make.
+  const cancels = [warmImage(sources, "hero"), warmImage(sources, "backdrop")];
+  const cancel = () => cancels.forEach((stop) => stop?.());
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
 }
 
-export function preloadTitles(ids: string[], userId: string) {
+// Discovery warms the title being looked at and the next one in a single request, plus artwork
+// for what follows. Nothing starts until the feed has rested, so swiping quickly costs nothing.
+export function preloadTitles(ids: string[], settle = 400) {
   const controller = new AbortController();
-  for (const id of ids) {
-    const href = `/title/${encodeURIComponent(id)}`;
-    warmImages(href, controller.signal);
-    void prepareScreen(href, userId, controller.signal, true)
+  const start = setTimeout(() => {
+    track("preload", "titles", { count: ids.length });
+    void screenModules.details().catch(() => {});
+    for (const id of ids) warmImages(`/title/${encodeURIComponent(id)}`, controller.signal);
+    void loadTitles(ids.slice(0, 2), controller.signal)
       .then(() => {
-        if (!controller.signal.aborted) warmImages(href, controller.signal);
+        if (controller.signal.aborted) return;
+        for (const id of ids) warmImages(`/title/${encodeURIComponent(id)}`, controller.signal);
       })
       .catch(() => {});
-  }
-  return () => controller.abort();
+  }, settle);
+  return () => {
+    clearTimeout(start);
+    controller.abort();
+  };
 }
 
-// One session-scoped owner for intent, viewport predictions, and their cancellation.
+// One session-scoped owner for pointer, keyboard and press intent. Only a link the person is
+// actually aiming at is warmed; nothing is predicted from what happens to be on screen.
 export function startNavigationPreloading(userId: string) {
-  const predictions = new Map<string, AbortController>();
   const intents = new Map<
     HTMLAnchorElement,
     { controller: AbortController; timer?: ReturnType<typeof setTimeout> }
   >();
-  const visible = new Set<HTMLAnchorElement>();
-  const observed = new Set<HTMLAnchorElement>();
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-  const connection = (
-    navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }
-  ).connection;
-  const constrained = connection?.saveData || /(^|-)2g$/.test(connection?.effectiveType ?? "");
   const anchor = (target: EventTarget | null) =>
     target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
   const eligible = (link: HTMLAnchorElement) => {
@@ -158,6 +121,7 @@ export function startNavigationPreloading(userId: string) {
     );
   };
   const launch = (href: string, controller: AbortController) => {
+    track("preload", "intent", { href });
     warmImages(href, controller.signal);
     void prepareScreen(href, userId, controller.signal, true)
       .then(() => {
@@ -167,15 +131,19 @@ export function startNavigationPreloading(userId: string) {
         /* Speculative errors must not interrupt the current screen. Navigation retries. */
       });
   };
+  const drop = (link: HTMLAnchorElement) => {
+    const intent = intents.get(link);
+    if (!intent) return;
+    clearTimeout(intent.timer);
+    intent.controller.abort();
+    intents.delete(link);
+  };
   const releaseIntent = (link: HTMLAnchorElement) => {
     const intent = intents.get(link);
     if (!intent) return;
     clearTimeout(intent.timer);
     // A brief gap permits leave -> pointerdown/click to transfer ownership without restarting.
-    intent.timer = setTimeout(() => {
-      intent.controller.abort();
-      intents.delete(link);
-    }, 120);
+    intent.timer = setTimeout(() => drop(link), 120);
   };
   const enter = (event: Event) => {
     if (
@@ -190,16 +158,24 @@ export function startNavigationPreloading(userId: string) {
     const existing = intents.get(link);
     if (existing) {
       clearTimeout(existing.timer);
+      // Hovering schedules a start; press and focus mean the decision is made.
+      if (event.type !== "pointerover" && !existing.controller.signal.aborted)
+        existing.timer = setTimeout(() => drop(link), 20_000);
       return;
     }
     const controller = new AbortController();
-    intents.set(link, { controller });
-    launch(link.href, controller);
+    const intent: { controller: AbortController; timer?: ReturnType<typeof setTimeout> } = {
+      controller,
+    };
+    intents.set(link, intent);
+    // Moving across a grid must not start a request per link; a pause of a moment does.
+    const delay = event.type === "pointerover" ? 90 : 0;
+    const start = setTimeout(() => {
+      if (!controller.signal.aborted) launch(link.href, controller);
+    }, delay);
+    controller.signal.addEventListener("abort", () => clearTimeout(start), { once: true });
     // Touch/press intent has no reliable leave event. Never retain it indefinitely.
-    intents.get(link)!.timer = setTimeout(() => {
-      controller.abort();
-      intents.delete(link);
-    }, 20_000);
+    intent.timer = setTimeout(() => drop(link), 20_000);
   };
   const leave = (event: Event) => {
     const link = anchor(event.target);
@@ -209,108 +185,16 @@ export function startNavigationPreloading(userId: string) {
     if (link.contains(document.activeElement) && event.type === "pointerout") return;
     releaseIntent(link);
   };
-  const reconcile = () => {
-    refreshTimer = undefined;
-    const candidates =
-      document.hidden || constrained
-        ? []
-        : [...visible]
-            .filter(
-              (link) =>
-                link.isConnected &&
-                eligible(link) &&
-                !link.closest(".swiper-slide:not(.swiper-slide-active)"),
-            )
-            .sort((a, b) => {
-              const rank = (link: HTMLAnchorElement) =>
-                Number(!!link.closest("main")) * 10 +
-                (link.pathname.startsWith("/title/")
-                  ? 3
-                  : link.pathname.startsWith("/lists/") || link.pathname.startsWith("/profile/")
-                    ? 2
-                    : 0);
-              return rank(b) - rank(a);
-            });
-    const wanted = new Set(
-      candidates
-        .map((link) => link.href)
-        .filter((href, i, all) => all.indexOf(href) === i)
-        .slice(0, 4),
-    );
-    for (const [href, controller] of predictions)
-      if (!wanted.has(href)) {
-        controller.abort();
-        predictions.delete(href);
-      }
-    for (const href of wanted)
-      if (!predictions.has(href)) {
-        const controller = new AbortController();
-        predictions.set(href, controller);
-        launch(href, controller);
-      }
-  };
-  const schedule = () => {
-    if (!refreshTimer) refreshTimer = setTimeout(reconcile, 80);
-  };
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const link = entry.target as HTMLAnchorElement;
-        if (entry.isIntersecting) visible.add(link);
-        else visible.delete(link);
-      }
-      schedule();
-    },
-    { threshold: 0.15 },
-  );
-  const scan = () => {
-    for (const link of observed)
-      if (!link.isConnected) {
-        observer.unobserve(link);
-        observed.delete(link);
-        visible.delete(link);
-        intents.get(link)?.controller.abort();
-        intents.delete(link);
-      }
-    for (const link of document.querySelectorAll<HTMLAnchorElement>("a[href]"))
-      if (!observed.has(link)) {
-        observed.add(link);
-        observer.observe(link);
-      }
-    schedule();
-  };
-  const mutations = new MutationObserver(scan);
-  mutations.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["href", "class"],
-  });
   const events = ["pointerover", "pointerdown", "focusin"] as const;
   events.forEach((type) => document.addEventListener(type, enter, true));
   document.addEventListener("pointerout", leave, true);
   document.addEventListener("focusout", leave, true);
   const visibility = () => {
-    if (document.hidden) {
-      for (const intent of intents.values()) {
-        clearTimeout(intent.timer);
-        intent.controller.abort();
-      }
-      intents.clear();
-    }
-    schedule();
+    if (document.hidden) for (const link of intents.keys()) drop(link);
   };
   document.addEventListener("visibilitychange", visibility);
-  scan();
   return () => {
-    clearTimeout(refreshTimer);
-    observer.disconnect();
-    mutations.disconnect();
-    for (const controller of predictions.values()) controller.abort();
-    for (const intent of intents.values()) {
-      clearTimeout(intent.timer);
-      intent.controller.abort();
-    }
+    for (const link of intents.keys()) drop(link);
     events.forEach((type) => document.removeEventListener(type, enter, true));
     document.removeEventListener("pointerout", leave, true);
     document.removeEventListener("focusout", leave, true);

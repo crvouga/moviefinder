@@ -13,11 +13,21 @@ import { createQueries } from "./queries";
 import { createSync } from "./entity-store-sync";
 import { createTmdb, type Tmdb } from "./entity-store-sync/tmdb";
 import { AppError, metrics, log } from "./log";
+import { record, telemetryEnabled, timed } from "./telemetry";
 import { executeCommand } from "./commands";
 import { snapshot } from "./state";
 import { replay } from "./events";
 import { events, jobs } from "./db/schema";
 import { assertDatabaseReady, databaseFailure } from "./db/readiness";
+const telemetryBatch = z.object({
+  events: z
+    .array(
+      z
+        .object({ t: z.string().max(40), kind: z.string().max(40), name: z.string().max(200) })
+        .catchall(z.union([z.string().max(500), z.number(), z.boolean(), z.null()])),
+    )
+    .max(500),
+});
 export function createApplication(db: Database, config: Config, upstream?: Tmdb) {
   const auth = createAuth(db, config),
     sync = createSync(db, upstream ?? createTmdb(config.TMDB_API_READ_ACCESS_TOKEN ?? "")),
@@ -34,14 +44,24 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
     c.header("X-Frame-Options", "DENY");
     await next();
-    if (c.req.path !== "/api/events")
+    if (c.req.path !== "/api/events") {
+      const milliseconds = Math.round(performance.now() - start);
       log("http", "Request completed", {
         requestId,
         method: c.req.method,
         path: c.req.path,
         status: c.res.status,
-        milliseconds: Math.round(performance.now() - start),
+        milliseconds,
       });
+      if (telemetryEnabled() && c.req.path !== "/api/telemetry" && c.req.path.startsWith("/api/"))
+        record("http", `${c.req.method} ${c.req.path}`, {
+          requestId,
+          status: c.res.status,
+          ms: Math.round((performance.now() - start) * 10) / 10,
+          bytes: (await c.res.clone().arrayBuffer()).byteLength,
+          query: [...new URL(c.req.url).searchParams.keys()].join(",") || undefined,
+        });
+    }
   });
   root.onError((error, c) => {
     if (error instanceof AppError)
@@ -103,6 +123,12 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
     c.header("Cache-Control", "private, no-store");
     await next();
   });
+  if (telemetryEnabled())
+    root.post("/api/telemetry", zValidator("json", telemetryBatch), (c) => {
+      for (const { t, kind, name, ...fields } of c.req.valid("json").events)
+        record(kind, name, fields, "client", t);
+      return c.body(null, 204);
+    });
   const api = root
     .get("/api/ready", async (c) => {
       try {
@@ -119,7 +145,11 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
         .where(eq(jobs.state, "failed"));
       return c.json({ ...metrics, failedJobs: failed[0]?.count ?? 0 });
     })
-    .get("/api/state", async (c) => c.json(await snapshot(db, c.get("userId"))))
+    .get("/api/state", async (c) => {
+      const state = await timed("snapshot", "state", () => snapshot(db, c.get("userId")));
+      record("snapshot", "size", { entities: state.entities.length });
+      return c.json(state);
+    })
     .get("/api/discover", zValidator("query", feedParams), async (c) => {
       try {
         return c.json(
@@ -134,11 +164,39 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
         throw error;
       }
     })
-    .get("/api/title/:id", async (c) => {
-      const parsed = sourceId.safeParse(c.req.param("id"));
-      if (!parsed.success) throw new AppError(400, "Invalid canonical title identity");
-      return c.json(await queries.entity(parsed.data, c.get("userId"), c.req.raw.signal));
-    })
+    .get(
+      "/api/title/:id",
+      zValidator("query", z.object({ warm: z.literal("1").optional() })),
+      async (c) => {
+        const parsed = sourceId.safeParse(c.req.param("id"));
+        if (!parsed.success) throw new AppError(400, "Invalid canonical title identity");
+        return c.json(
+          await queries.entity(
+            parsed.data,
+            c.get("userId"),
+            c.req.raw.signal,
+            c.req.valid("query").warm === "1",
+          ),
+        );
+      },
+    )
+    .get(
+      "/api/titles",
+      zValidator(
+        "query",
+        z.object({
+          ids: z
+            .string()
+            .max(1200)
+            .transform((v) => v.split(",").filter(Boolean))
+            .pipe(z.array(sourceId).min(1).max(8)),
+        }),
+      ),
+      async (c) =>
+        c.json({
+          results: await queries.titles(c.req.valid("query").ids, c.get("userId")),
+        }),
+    )
     .get(
       "/api/social-search",
       zValidator(
@@ -196,6 +254,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
     c.header("X-Accel-Buffering", "no");
     return streamSSE(c, async (stream) => {
       metrics.sseConnections++;
+      record("sse", "open", { cursor, connections: metrics.sseConnections });
       let closed = false;
       const onClose = () => {
         closed = true;
@@ -206,6 +265,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
         const [oldest] = await db.select({ id: min(events.id) }).from(events);
         if (cursor > 0 && oldest?.id && cursor < Number(oldest.id) - 1) {
           const state = await snapshot(db, userId);
+          record("sse", "reset", { entities: state.entities.length });
           cursor = Number(state.cursor);
           const reset: EventEnvelope = {
             protocol: 1,
@@ -227,6 +287,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
             lastAuth = Date.now();
           }
           const rows = await replay(db, userId, cursor);
+          if (rows.length) record("sse", "replay", { events: rows.length, cursor });
           for (const row of rows) {
             if (closed) break;
             cursor = row.id;
@@ -245,6 +306,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
         }
       } finally {
         metrics.sseConnections--;
+        record("sse", "close", { connections: metrics.sseConnections });
         shutdown.signal.removeEventListener("abort", onClose);
       }
     });

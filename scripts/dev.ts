@@ -1,6 +1,9 @@
 import { openLocalDatabase, migrateLocalDatabase } from "./local-database";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+// Cookies on localhost are shared across ports, so other dev apps can push requests past the 16KB default.
+const headerLimit = 131072;
 const children = new Map<ChildProcess, Promise<number>>();
 const pidFile = ".local/dev.pid";
 let stopping = false;
@@ -13,8 +16,9 @@ const abort = () => {
       if (process.platform === "win32") child.kill();
       else process.kill(-child.pid, "SIGTERM");
     } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ESRCH"))
-        throw error;
+      // macOS reports EPERM instead of ESRCH for a process group whose leader already exited.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code !== "ESRCH" && code !== "EPERM") throw error;
     }
   }
 };
@@ -33,6 +37,21 @@ function launch(args: string[], env: NodeJS.ProcessEnv) {
 }
 process.on("SIGINT", abort);
 process.on("SIGTERM", abort);
+process.on("SIGHUP", abort);
+function freePort() {
+  return new Promise<number>((accept, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "0.0.0.0", () => {
+      const address = probe.address();
+      probe.close(() =>
+        typeof address === "object" && address
+          ? accept(address.port)
+          : reject(new Error("No port")),
+      );
+    });
+  });
+}
 let database: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
 try {
   await mkdir(".local", { recursive: true, mode: 0o700 });
@@ -54,16 +73,27 @@ try {
   if (!stopping) {
     await migrateLocalDatabase(database.url);
     if (!stopping) {
+      const [apiPort, webPort] = [await freePort(), await freePort()];
+      const origin = `http://localhost:${webPort}`;
       const env = {
         ...process.env,
         DATABASE_URL: database.url,
         NODE_ENV: "development",
-        MOVIEFINDER_ORIGIN: "http://localhost:5173",
-        PORT: "8080",
+        MOVIEFINDER_ORIGIN: origin,
+        MOVIEFINDER_WEB_PORT: String(webPort),
+        PORT: String(apiPort),
+        MOVIEFINDER_TELEMETRY_DIR: ".local/telemetry",
       };
-      console.log("Local PostgreSQL ready. Starting MovieFinder at http://localhost:5173");
-      const backend = launch(["bun", "--watch", "src/server/index.ts"], env);
-      const frontend = launch(["bun", "x", "--no-install", "vp", "dev"], env);
+      console.log(`Local PostgreSQL ready. Starting MovieFinder at ${origin}`);
+      const backend = launch(
+        ["bun", `--max-http-header-size=${headerLimit}`, "--watch", "src/server/index.ts"],
+        env,
+      );
+      const frontend = launch(["bun", "x", "--no-install", "vp", "dev"], {
+        ...env,
+        NODE_OPTIONS:
+          `${process.env.NODE_OPTIONS ?? ""} --max-http-header-size=${headerLimit}`.trim(),
+      });
       exitCode = await Promise.race([backend, frontend]);
     }
   }

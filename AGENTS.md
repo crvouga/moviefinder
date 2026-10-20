@@ -9,6 +9,8 @@ Local development and default isolated database tests use the user-requested `em
 
 Use `bun run check` for native TypeScript checking, Oxlint, Oxfmt, and fast deterministic tests through Vite+. Use `bun run build`, `bun run test:integration`, and `bun run test:e2e` for the appropriate verification layer. Integration/browser scripts create isolated temporary embedded PostgreSQL unless a validated loopback TEST_DATABASE_URL is supplied. Never use DATABASE_URL for automated tests.
 
+When debugging local slowness or runtime behavior, read `bun run telemetry` (see docs/observability.md) and reproduce with `bun run perf` before guessing. Telemetry is development-only and must stay free of secrets and personal data.
+
 Atlas exclusively owns migrations. Update atlas/schema.sql and generate a migration with Atlas; keep Drizzle definitions aligned. No Drizzle Kit or Better Auth migration runner. Commit atlas.sum with migrations. Do not add schema creation to application migrations: OpenTofu owns the allocation.
 
 All TMDB HTTP requests belong in entity-store-sync. Preserve source JSON separately from normalized client projections. Never treat a locally matching subset as a complete provider result page. All server entities live in TanStack DB query collections. Use Hono RPC commands with optimistic transactions and stable operation IDs. Do not introduce parallel component caches of entities, spinning indicators, anonymous application access, or private lists.

@@ -1,10 +1,11 @@
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { Search, ArrowUpRight, Users, Bookmark } from "lucide-react";
 import { feedParams, type Entity } from "../../shared/contracts";
 import { discover, subscribeQuery, useEntities, report, loadSocial } from "../state";
-import { TitleCard, PageHeading, Empty } from "../components/common";
+import { TitleCard, PageHeading, Empty, ShowMore, usePaging } from "../components/common";
+const noIds: string[] = [];
 export function SearchPage() {
   const location = useLocation(),
     navigate = useNavigate(),
@@ -49,12 +50,22 @@ export function SearchPage() {
     };
   }, [query]);
   const meta = queries.find((q) => q.id === queryId),
-    remoteIds = (meta?.data.ids as string[]) ?? [],
-    matches = (e: Entity) => e.title.toLowerCase().includes(query.toLowerCase()),
-    titles = [...movies, ...tv, ...people].filter(
-      (e) => query && (matches(e) || remoteIds.includes(e.id)),
-    ),
-    personResults = titles.filter((e) => e.kind === "person"),
+    remoteIds = (meta?.data.ids as string[] | undefined) ?? noIds,
+    paging = usePaging(query, 48);
+  // Provider-ranked results first, then other cached matches. Computed once per change.
+  const titles = useMemo(() => {
+    if (!query) return [];
+    const needle = query.toLowerCase(),
+      remote = new Set(remoteIds),
+      all = new Map([...movies, ...tv, ...people].map((e) => [e.id, e])),
+      ranked = remoteIds.map((id) => all.get(id)).filter((e): e is Entity => !!e);
+    for (const e of all.values())
+      if (!remote.has(e.id) && e.title.toLowerCase().includes(needle)) ranked.push(e);
+    return ranked;
+  }, [query, remoteIds, movies, tv, people]);
+  const matches = (e: Entity) => e.title.toLowerCase().includes(query.toLowerCase()),
+    filmsAndSeries = useMemo(() => titles.filter((t) => t.kind !== "person"), [titles]),
+    personResults = useMemo(() => titles.filter((e) => e.kind === "person"), [titles]),
     userResults = users.filter(matches),
     listResults = lists.filter(matches);
   return (
@@ -94,16 +105,15 @@ export function SearchPage() {
               <span> · More results may arrive</span>
             )}
           </div>
-          {titles.filter((t) => t.kind !== "person").length > 0 && (
+          {filmsAndSeries.length > 0 && (
             <section className="detail-section">
               <h2>Films & series</h2>
               <div className="title-grid">
-                {titles
-                  .filter((t) => t.kind !== "person")
-                  .map((e) => (
-                    <TitleCard key={e.id} entity={e} />
-                  ))}
+                {filmsAndSeries.slice(0, paging.shown).map((e) => (
+                  <TitleCard key={e.id} entity={e} />
+                ))}
               </div>
+              <ShowMore total={filmsAndSeries.length} paging={paging} />
             </section>
           )}
           {personResults.length > 0 && (

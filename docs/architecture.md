@@ -25,7 +25,13 @@ TanStack Router owns deep links and navigation. Authentication restoration gates
 
 Commands create TanStack DB optimistic transactions, enter a per-resource request lane, and merge the authoritative response before optimistic overlays settle. A failed command rolls back its overlay and displays a non-blocking message. A transport retry reuses the operation ID.
 
-Discovery mounts only neighboring virtual slides. Poster dimensions are reserved, responsive resolutions are used, and at most two upcoming posters are explicitly prefetched. Feed positions are transient session UI state. Detail and social pages are code-split.
+List-shaped responses (feeds, the bootstrap snapshot, saved lists and SSE events) carry titles as summaries: scalar fields only, marked `data.summary`. Relations, credits and other collections arrive with the detail view, whose graph is bounded (100 cast, 40 crew, 30 guests, 300 filmography entries); the source JSON keeps everything. A summary never replaces relations the client already holds, and a screen showing a title re-reads it when its subscription changes. Without this, one long-running series put 16,000 entities (4 MB) into every feed response and froze the interface for seconds.
+
+Discovery mounts only neighboring virtual slides. Poster dimensions are reserved and at most two upcoming posters are explicitly prefetched after the feed rests. Artwork resolution is chosen by the image module below. Feed positions are transient session UI state. Detail and social pages are code-split.
+
+## Images
+
+`src/client/images.ts` is the only code that builds TMDB image URLs. A screen hands the `<Image>` component (`components/image.tsx`) every image an entity has (`entityImages`) and the named slot it will fill (`feed`, `card`, `hero`, `thumb`, `still`, `backdrop`, `avatar`). The slot declares the acceptable shapes in preference order, the CSS `sizes` it is laid out at and a maximum useful pixel width. The module picks the source whose shape fits (a feed slide falls back to a backdrop when a title has no poster), emits a `srcset` from TMDB's per-role size ladder up to that cap, and lets the browser choose by viewport and pixel density. `original` is never requested. Absolute HTTPS URLs such as account photos pass through untouched. Preloading calls the same resolver for the detail page's slots, so warmed requests are the ones the page makes. Add a slot rather than a one-off size when a new layout needs different artwork.
 
 ## Operational scope
 

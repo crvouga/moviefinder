@@ -1,5 +1,6 @@
 import { RequestPool } from "./request-pool";
 import { createOutbox } from "./outbox";
+import { track, measure, span, count, gauge } from "./telemetry";
 const outbox = createOutbox(window.localStorage);
 const itemAliases = new Map<string, string>();
 import { fieldText } from "../shared/contracts";
@@ -52,9 +53,13 @@ export async function readResponse<T>(res: Pick<Response, "ok" | "status" | "jso
 }
 let initialRequest: Promise<{ entities: Entity[]; cursor: string }> | undefined;
 const loadSnapshot = () =>
-  (initialRequest ??= api.api.state
-    .$get()
-    .then((r) => readResponse<{ entities: Entity[]; cursor: string }>(r))
+  (initialRequest ??= span("snapshot", "load", () =>
+    api.api.state.$get().then((r) => readResponse<{ entities: Entity[]; cursor: string }>(r)),
+  )
+    .then((state) => {
+      track("snapshot", "size", { entities: state.entities.length });
+      return state;
+    })
     .catch((error) => {
       initialRequest = undefined;
       throw error;
@@ -80,30 +85,81 @@ function makeCollection(kind: Kind) {
 export const collections = Object.fromEntries(
   kinds.map((kind) => [kind, makeCollection(kind)]),
 ) as Record<Kind, ReturnType<typeof makeCollection>>;
+gauge(() => Object.fromEntries(kinds.map((kind) => [`n_${kind}`, collections[kind].size])));
 const versions = new Map<string, number>();
-export async function merge(entities: Entity[]) {
+let loaded: Promise<unknown> | undefined;
+const collectionsReady = () =>
+  (loaded ??= Promise.all(Object.values(collections).map((c) => c.preload())).catch((error) => {
+    loaded = undefined;
+    throw error;
+  }));
+// Writes apply synchronously and wake every live query. Issuing all of them in one tick lets
+// React render once instead of once per collection, so never await between them.
+function applyMerge(entities: Entity[]) {
   const groups = new Map<Kind, Entity[]>();
   for (const e of entities) {
     const key = `${e.kind}:${e.id}`;
-    if (e.version < (versions.get(key) ?? -1)) continue;
+    const known = versions.get(key) ?? -1,
+      held = collections[e.kind].get(e.id),
+      summary = e.data.summary === true;
+    if (e.version < known) continue;
+    // A summary (feeds, snapshot, events) never repeats a version the collection already has and
+    // never discards relations loaded by the detail view. Detail entities always apply.
+    if (summary && held && e.version === known) continue;
     versions.set(key, e.version);
+    const next =
+      summary && held
+        ? {
+            ...e,
+            related: held.related,
+            data: { ...held.data, ...e.data, summary: held.data.summary },
+          }
+        : e;
     const group = groups.get(e.kind) ?? [];
-    group.push(e);
+    group.push(next);
     groups.set(e.kind, group);
   }
+  const writes: Promise<void>[] = [];
   for (const [kind, values] of groups) {
-    await collections[kind].preload();
-    await collections[kind].utils.writeUpsert([...new Map(values.map((e) => [e.id, e])).values()]);
+    const unique = [...new Map(values.map((e) => [e.id, e])).values()];
+    writes.push(
+      measure(
+        "merge",
+        kind,
+        () => collections[kind].utils.writeUpsert(unique),
+        { entities: unique.length, size: collections[kind].size },
+        2,
+      ),
+    );
   }
+  return writes;
 }
-async function remove(removed: { kind: Kind; id: string }[]) {
+function applyRemove(removed: { kind: Kind; id: string }[]) {
+  const writes: Promise<void>[] = [];
   for (const r of removed) {
     versions.set(`${r.kind}:${r.id}`, Infinity);
-    if (collections[r.kind].has(r.id)) await collections[r.kind].utils.writeDelete(r.id);
+    if (collections[r.kind].has(r.id)) writes.push(collections[r.kind].utils.writeDelete(r.id));
   }
+  return writes;
 }
+type QueryRow = Entity;
+async function commit(change: {
+  entities?: Entity[];
+  removed?: { kind: Kind; id: string }[];
+  query?: QueryRow | QueryRow[];
+}) {
+  await collectionsReady();
+  const queries = change.query ? [change.query].flat() : [];
+  await Promise.all([
+    ...applyMerge(change.entities ?? []),
+    ...applyRemove(change.removed ?? []),
+    ...(queries.length ? [collections.query.utils.writeUpsert(queries)] : []),
+  ]);
+}
+export const merge = (entities: Entity[]) => commit({ entities });
 export function useEntities(kind: Kind) {
-  const result = useLiveQuery((q) => q.from({ entity: collections[kind] }), [kind]);
+  count(`render.useEntities.${kind}`);
+  const result = useLiveQuery({ query: (q) => q.from({ entity: collections[kind] }) });
   return (result.data ?? []) as Entity[];
 }
 export function useEntity(id: string | undefined) {
@@ -128,10 +184,13 @@ export { notices, notify, report } from "./notifications";
 let syncRetry: ReturnType<typeof setTimeout> | undefined,
   syncEpoch = 0,
   syncFailures = 0;
+let eventBatch: string[] = [],
+  eventTimer: ReturnType<typeof setTimeout> | undefined;
 let source: EventSource | undefined,
   started = false,
   eventQueue = Promise.resolve();
-const subscriptions = new Map<string, { params: FeedParams; users: number }>();
+// Live interest in a server subscription (a feed page or a title); events for it re-read it.
+const subscriptions = new Map<string, { reload: () => Promise<unknown>; users: number }>();
 export function encodeParams(p: FeedParams): Record<string, string> {
   return Object.fromEntries(
     Object.entries(p)
@@ -139,11 +198,27 @@ export function encodeParams(p: FeedParams): Record<string, string> {
       .map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : fieldText(v)]),
   );
 }
-export const requests = new RequestPool<string | null>();
+export const requests = new RequestPool<string | null>(3, (event, fields) =>
+  track("pool", event, fields),
+);
+// Cached reads are dropped precisely when an event or command says they changed (see
+// `staleKeys`), so a result can be trusted for a while. Incomplete ones are still followed live.
+const ttlFor = (state: string | undefined) => (state === "complete" ? 60_000 : 5_000);
 const queryTTL = (id: string) =>
-  (collections.query.get(id)?.data.coverage as { state?: string } | undefined)?.state === "complete"
-    ? 30_000
-    : 250;
+  ttlFor((collections.query.get(id)?.data.coverage as { state?: string } | undefined)?.state);
+// Which cached reads an event for these subscriptions (or a reset) makes stale.
+function staleKeys(subscriptionIds: Iterable<string>, reset = false) {
+  const ids = [...subscriptionIds];
+  return (key: string) =>
+    reset ||
+    ids.some((id) =>
+      id.startsWith("entity:")
+        ? key === id
+        : id.startsWith("discover:")
+          ? key.startsWith("discover:")
+          : key.startsWith("social:") || key.startsWith("discover:"),
+    );
+}
 export function discover(
   params: FeedParams,
   signal?: AbortSignal,
@@ -153,7 +228,9 @@ export function discover(
   return requests.run(
     `discover:${stableSerialize(params)}`,
     async (sharedSignal) => {
-      id = await readDiscovery(params, sharedSignal);
+      id = await span("load", "discover", () => readDiscovery(params, sharedSignal), {
+        speculative,
+      });
       return id;
     },
     { signal, speculative, ttl: () => queryTTL(id) },
@@ -164,20 +241,37 @@ async function readDiscovery(params: FeedParams, signal: AbortSignal) {
     await api.api.discover.$get({ query: encodeParams(params) }, { init: { signal } }),
   );
   signal.throwIfAborted();
-  await merge(result.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: result.id,
-    kind: "query",
-    version: Date.now(),
-    title: "Discovery",
-    data: { ids: result.ids, coverage: result.coverage, params },
+  await commit({
+    entities: result.entities,
+    query: {
+      id: result.id,
+      kind: "query",
+      version: Date.now(),
+      title: "Discovery",
+      data: { ids: result.ids, coverage: result.coverage, params },
+    },
   });
   return result.id;
 }
+// A hydration job emits an event every few titles. One trailing read per query is enough.
+const refetches = new Map<string, ReturnType<typeof setTimeout>>();
+function refetchSoon(id: string) {
+  if (refetches.has(id)) return;
+  refetches.set(
+    id,
+    setTimeout(() => {
+      refetches.delete(id);
+      const sub = subscriptions.get(id);
+      if (!sub) return;
+      // The response that raised this event may have settled after it; never reuse that one.
+      requests.invalidate(staleKeys([id]));
+      void sub.reload().catch(report);
+    }, 300),
+  );
+}
 export function subscribeQuery(id: string, params: FeedParams) {
   const current = subscriptions.get(id);
-  subscriptions.set(id, { params, users: (current?.users ?? 0) + 1 });
+  subscriptions.set(id, { reload: () => discover(params), users: (current?.users ?? 0) + 1 });
   const metadata = collections.query.get(id);
   if ((metadata?.data.coverage as { state?: string } | undefined)?.state !== "complete")
     void discover(params).catch(report);
@@ -187,32 +281,98 @@ export function subscribeQuery(id: string, params: FeedParams) {
     else subscriptions.delete(id);
   };
 }
-export function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
-  return requests.run(`entity:${id}`, (sharedSignal) => readEntity(id, sharedSignal), {
-    signal,
-    speculative,
-    ttl: () => queryTTL(`entity:${id}`),
-  });
+// Hydration completes after the first response, and events carry only summaries, so a title on
+// screen re-reads itself when its subscription changes.
+export function subscribeEntity(id: string) {
+  const key = `entity:${id}`,
+    current = subscriptions.get(key);
+  subscriptions.set(key, { reload: () => loadEntity(id), users: (current?.users ?? 0) + 1 });
+  return () => {
+    const sub = subscriptions.get(key);
+    if (sub && sub.users > 1) sub.users--;
+    else subscriptions.delete(key);
+  };
 }
-async function readEntity(id: string, signal: AbortSignal) {
-  const res = await readResponse<QueryResult>(
-    await api.api.title[":id"].$get({ param: { id } }, { init: { signal } }),
+const coverageOf = (id: string) =>
+  (collections.query.get(`entity:${id}`)?.data.coverage as { state?: string } | undefined)?.state;
+const hydrated = (id: string) => ["complete", "stale"].includes(coverageOf(id) ?? "");
+export async function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
+  const read = () =>
+    requests.run(
+      `entity:${id}`,
+      (sharedSignal) =>
+        span("load", "entity", () => readEntity(id, sharedSignal, speculative), {
+          id,
+          speculative,
+        }),
+      {
+        signal,
+        speculative,
+        // A hover answer stays good until an event for this title says otherwise, and opening
+        // the title never reuses one that did not hydrate it (see `fresh`).
+        ttl: () => (speculative ? 60_000 : queryTTL(`entity:${id}`)),
+        // A hover read reports what is cached and starts no upstream work. Opening the title
+        // must not settle for that answer.
+        fresh: () => hydrated(id),
+      },
+    );
+  const result = await read();
+  // The request this one joined may have been a hover read that was already in flight.
+  return !speculative && !hydrated(id) && !signal?.aborted ? read() : result;
+}
+// Warms several titles with one request. Each is then answered from the pool like a single read.
+export function loadTitles(ids: string[], signal?: AbortSignal) {
+  const wanted = [...new Set(ids)].filter((id) => !requests.has(`entity:${id}`)).sort();
+  if (!wanted.length) return Promise.resolve(null);
+  return requests.run(
+    `titles:${wanted.join(",")}`,
+    (sharedSignal) =>
+      span("load", "titles", () => readTitles(wanted, sharedSignal), { count: wanted.length }),
+    { signal, speculative: true, ttl: () => 5_000 },
+  );
+}
+async function readTitles(ids: string[], signal: AbortSignal) {
+  const { results } = await readResponse<{ results: QueryResult[] }>(
+    await api.api.titles.$get({ query: { ids: ids.join(",") } }, { init: { signal } }),
   );
   signal.throwIfAborted();
-  await merge(res.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: res.id,
-    kind: "query",
-    version: Date.now(),
-    title: "Details",
-    data: { ids: res.ids, coverage: res.coverage },
+  await commit({
+    entities: results.flatMap((r) => r.entities),
+    query: results.map((r) => ({
+      id: r.id,
+      kind: "query" as const,
+      version: Date.now(),
+      title: "Details",
+      data: { ids: r.ids, coverage: r.coverage },
+    })),
+  });
+  for (const r of results) requests.prime(r.id, r.id, ttlFor(r.coverage.state), true);
+  return null;
+}
+async function readEntity(id: string, signal: AbortSignal, speculative: boolean) {
+  const res = await readResponse<QueryResult>(
+    await api.api.title[":id"].$get(
+      { param: { id }, query: speculative ? { warm: "1" } : {} },
+      { init: { signal } },
+    ),
+  );
+  signal.throwIfAborted();
+  await commit({
+    entities: res.entities,
+    query: {
+      id: res.id,
+      kind: "query",
+      version: Date.now(),
+      title: "Details",
+      data: { ids: res.ids, coverage: res.coverage },
+    },
   });
   return res.id;
 }
 export async function startSync(userId: string) {
   if (started) return;
   started = true;
+  const begun = performance.now();
   const epoch = syncEpoch;
   try {
     await Promise.all(
@@ -220,43 +380,67 @@ export async function startSync(userId: string) {
         .filter((c) => c.utils.isError)
         .map((c) => c.utils.refetch({ throwOnError: true })),
     );
-    await Promise.all(Object.values(collections).map((c) => c.preload()));
     const state = await loadSnapshot();
+    await span("sync", "preload", () => collectionsReady(), { entities: state.entities.length });
     if (epoch !== syncEpoch) return;
     syncFailures = 0;
+    track("sync", "ready", {
+      ms: Math.round(performance.now() - begun),
+      entities: state.entities.length,
+    });
     for (const e of state.entities) versions.set(`${e.kind}:${e.id}`, e.version);
     for (const pending of outbox.read(userId)) void command(pending, userId, pending).catch(report);
     let last = Number(state.cursor);
     source = new EventSource(`/api/events?cursor=${state.cursor}`);
+    // Hydrating one page emits an event per title. Apply a burst as one commit and one render.
+    const apply = async (raw: string[]) => {
+      const handling = performance.now();
+      let entities: Entity[] = [],
+        removed: { kind: Kind; id: string }[] = [];
+      const refetch = new Set<string>();
+      let reset = false,
+        events = 0;
+      for (const data of raw) {
+        const event = eventEnvelopeSchema.parse(JSON.parse(data));
+        if (event.protocol !== 1 || Number(event.id) <= last) continue;
+        if (event.type === "reset") {
+          for (const [kind, c] of Object.entries(collections)) {
+            const keys = [...c.keys()].filter(
+              (id) => kind === "query" || versions.has(`${kind}:${id}`),
+            );
+            if (keys.length) await c.utils.writeDelete(keys);
+          }
+          versions.clear();
+          // A snapshot supersedes everything accumulated before it.
+          entities = [];
+          removed = [];
+          reset = true;
+        }
+        entities.push(...event.entities);
+        removed.push(...event.removed);
+        refetch.add(event.subscription);
+        last = Number(event.id);
+        events++;
+      }
+      if (!events) return;
+      requests.invalidate(staleKeys(refetch, reset));
+      await commit({ entities, removed });
+      track("sse", "batch", {
+        ms: Math.round(performance.now() - handling),
+        events,
+        entities: entities.length,
+        removed: removed.length,
+      });
+      for (const [id] of subscriptions) if (reset || refetch.has(id)) refetchSoon(id);
+    };
     source.addEventListener("change", (message: MessageEvent) => {
-      eventQueue = eventQueue
-        .then(async () => {
-          const event = eventEnvelopeSchema.parse(JSON.parse(message.data));
-          if (event.protocol !== 1 || Number(event.id) <= last) return;
-          if (event.type === "reset") {
-            for (const [kind, c] of Object.entries(collections)) {
-              const keys = [...c.keys()].filter(
-                (id) => kind === "query" || versions.has(`${kind}:${id}`),
-              );
-              if (keys.length) await c.utils.writeDelete(keys);
-            }
-            versions.clear();
-          }
-          requests.invalidate();
-          await merge(event.entities);
-          await remove(event.removed);
-          last = Number(event.id);
-          if (
-            event.type === "reset" ||
-            event.type === "complete" ||
-            subscriptions.has(event.subscription)
-          ) {
-            for (const [id, sub] of subscriptions)
-              if (event.type === "reset" || id === event.subscription)
-                void discover(sub.params).catch(report);
-          }
-        })
-        .catch(report);
+      eventBatch.push(message.data);
+      eventTimer ??= setTimeout(() => {
+        const raw = eventBatch;
+        eventBatch = [];
+        eventTimer = undefined;
+        eventQueue = eventQueue.then(() => apply(raw)).catch(report);
+      }, 40);
     });
     source.addEventListener("error", () =>
       notices.dispatchEvent(new CustomEvent("connection", { detail: "reconnecting" })),
@@ -276,6 +460,11 @@ export async function startSync(userId: string) {
 }
 export function stopSync() {
   requests.clear();
+  clearTimeout(eventTimer);
+  eventTimer = undefined;
+  eventBatch = [];
+  for (const timer of refetches.values()) clearTimeout(timer);
+  refetches.clear();
   syncEpoch++;
   if (syncRetry) clearTimeout(syncRetry);
   source?.close();
@@ -541,9 +730,9 @@ export async function command(
             outbox.alias(userId, c.operationId, item.id);
           }
         }
-        requests.invalidate();
-        await merge(result.entities);
-        await remove(result.removed);
+        // Commands change what feeds and lists show; the entities they touch arrive merged.
+        requests.invalidate((key) => !key.startsWith("entity:"));
+        await commit(result);
       });
     lanes.set(key, pending);
     try {
@@ -609,14 +798,15 @@ async function readSocial(
             );
   const result = await readResponse<{ entities: Entity[]; nextCursor: string | null }>(response);
   signal.throwIfAborted();
-  await merge(result.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: `social:${kind}:${value}`,
-    kind: "query",
-    version: Date.now(),
-    title: kind,
-    data: { nextCursor: result.nextCursor },
+  await commit({
+    entities: result.entities,
+    query: {
+      id: `social:${kind}:${value}`,
+      kind: "query",
+      version: Date.now(),
+      title: kind,
+      data: { nextCursor: result.nextCursor },
+    },
   });
   return result.nextCursor;
 }
@@ -630,7 +820,11 @@ export function loadSocial(
 ) {
   return requests.run(
     `social:${stableSerialize([kind, value, cursor])}`,
-    (sharedSignal) => readSocial(kind, value, cursor, sharedSignal),
+    (sharedSignal) =>
+      span("load", "social", () => readSocial(kind, value, cursor, sharedSignal), {
+        scope: kind,
+        speculative,
+      }),
     { signal, speculative, ttl: () => 5_000 },
   );
 }

@@ -37,6 +37,31 @@ export function kindFor(id: string): Kind {
       ? "season"
       : ((id.split(":")[1] ?? "movie") as Kind);
 }
+// Long-running series report thousands of cast and crew entries and prolific people hundreds
+// of credits. The source JSON keeps all of it; the client projection keeps what a screen shows.
+const castLimit = 100,
+  crewLimit = 40,
+  guestLimit = 30,
+  filmographyLimit = 300;
+const crewRank = (department: unknown) =>
+  ({ Directing: 0, Writing: 1, Production: 2 })[str(department)] ?? 3;
+const primitive = (v: unknown) => v === null || ["string", "number", "boolean"].includes(typeof v);
+// What list-shaped responses (feeds, snapshots, events, saved lists) carry for a title: the entity
+// alone with scalar fields. Relations, credits and other collections load with the detail view.
+export function summarize(entity: Entity): Entity {
+  const { related: _related, ...rest } = entity;
+  return {
+    ...rest,
+    data: {
+      ...Object.fromEntries(Object.entries(entity.data).filter(([, v]) => primitive(v))),
+      summary: true,
+    },
+  };
+}
+export function summaryOf(id: string, payload: unknown, version = 1): Entity[] {
+  const primary = normalize(id, payload, version).find((e) => e.id === id);
+  return primary ? [summarize(primary)] : [];
+}
 export function normalize(id: string, payload: unknown, version = 1): Entity[] {
   const p = record(payload),
     kind = kindFor(id),
@@ -46,7 +71,13 @@ export function normalize(id: string, payload: unknown, version = 1): Entity[] {
   const related: Entity[] = [];
   const title = str(p.title) || str(p.name) || "Details unavailable";
   const credits = record(p.credits ?? p.aggregate_credits),
-    people = [...array(credits.cast), ...array(credits.crew), ...array(p.guest_stars)];
+    people = [
+      ...array(credits.cast).slice(0, castLimit),
+      ...array(credits.crew)
+        .sort((a, b) => crewRank(a.department) - crewRank(b.department))
+        .slice(0, crewLimit),
+      ...array(p.guest_stars).slice(0, guestLimit),
+    ];
   const creditIds = people.map((person, i) => {
     const pid = canonicalId("person", num(person.id));
     related.push({
@@ -99,7 +130,14 @@ export function normalize(id: string, payload: unknown, version = 1): Entity[] {
     knownFor: { results: p.known_for },
   })) {
     const r = record(value),
-      all = [...array(r.results), ...array(r.cast), ...array(r.crew)];
+      everything = [...array(r.results), ...array(r.cast), ...array(r.crew)],
+      all =
+        key === "filmography"
+          ? everything
+              .filter((x) => x.media_type !== "person")
+              .sort((a, b) => num(b.popularity) - num(a.popularity))
+              .slice(0, filmographyLimit)
+          : everything;
     relationGroups[key] = [
       ...new Set(
         all

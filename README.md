@@ -9,9 +9,9 @@ Requires Bun 1.4.2, a supported Node runtime (22.22.3 used here), Atlas, and the
 1. `bun install --frozen-lockfile`.
 2. Authenticate using the documented `vault login` workflow. This checkout's `.vault.yaml` selects `personal/dev`.
 3. Run `bun run dev`, or choose **Run → MovieFinder** in super.engineering.
-4. Open `http://localhost:5173` and register an account on the first run.
+4. Open the `http://localhost:<port>` URL printed at startup and register an account on the first run.
 
-Startup initializes a local PostgreSQL cluster, creates the local database/schema, applies committed Atlas migrations, and starts both development servers. Vite+ proxies API requests to Bun on 8080. The database listens only on loopback, uses an available port, and persists under ignored `.local/postgres`. Generated local credentials stay in private ignored `.local/postgres.json`; they never enter Git or Docker build contexts. Stop shuts down the development servers and their PostgreSQL process while retaining your data. A later run reopens the same database.
+Startup initializes a local PostgreSQL cluster, creates the local database/schema, applies committed Atlas migrations, and starts both development servers. Both servers use free ports chosen at each start (the URL is printed), and Vite+ proxies API requests to Bun. The database listens only on loopback, uses an available port, and persists under ignored `.local/postgres`. Generated local credentials stay in private ignored `.local/postgres.json`; they never enter Git or Docker build contexts. `bun run telemetry` summarizes timings recorded while you use the app; see [observability](docs/observability.md). Stop shuts down the development servers and their PostgreSQL process while retaining your data. A later run reopens the same database.
 
 The local launcher always supplies its own database URL, overriding any shared `DATABASE_URL` injected by Vault. Vault still supplies the real TMDB token and authentication secret. `dev:local` starts the same embedded database when those other variables have already been injected. Shared infrastructure allocation requirements apply only to explicit shared commands and deployment.
 
@@ -24,7 +24,7 @@ Email/password registration works without a social provider. Recovery is enabled
 The repository's `.super.engineering/config.json` provides the built-in hooks:
 
 - **Setup** runs `bun install --frozen-lockfile` when super.engineering sets up the checkout.
-- **Run → MovieFinder** is the default. It runs `bun run dev`, loads catalog/auth secrets through Vault, initializes/migrates embedded PostgreSQL, and starts the frontend and backend together. Open `http://localhost:5173`.
+- **Run → MovieFinder** is the default. It runs `bun run dev`, loads catalog/auth secrets through Vault, initializes/migrates embedded PostgreSQL, and starts the frontend and backend together. Open the URL it prints.
 - **Run → Checks** runs the formatting, lint, native type checking, and unit/property suite with `bun run check`.
 - **Run → Database check** checks local database tables/columns, starting embedded PostgreSQL as needed.
 - **Run → Migrate database** applies Atlas migrations to embedded PostgreSQL; normal MovieFinder startup already does this automatically.

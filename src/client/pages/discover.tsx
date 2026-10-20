@@ -2,7 +2,7 @@ import { preloadTitles } from "../preloading";
 import { movieGenreIds, tvGenreIds } from "../../shared/genres";
 import { localMatch } from "../../shared/filters";
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { Swiper, SwiperSlide } from "swiper/react";
 import { Keyboard, Mousewheel, Virtual, A11y } from "swiper/modules";
@@ -66,6 +66,49 @@ const genres = [
   [10770, "TV Movie"],
 ] as const;
 const signature = (p: FeedParams) => stableSerialize({ ...p, cursor: undefined, exclude: [] });
+const Slide = memo(function Slide({
+  entity,
+  priority,
+  userId,
+}: {
+  entity: Entity;
+  priority: boolean;
+  userId: string;
+}) {
+  return (
+    <article className="discovery-slide">
+      <Poster entity={entity} slot="feed" priority={priority} />
+      <div className="poster-shade" />
+      <div className="slide-top">
+        <span className="editorial-badge">
+          <Sparkles size={13} />
+          {entity.kind === "tv" ? "THE SERIES EDIT" : "THE FILM EDIT"}
+        </span>
+        <span className="slide-rating">
+          <Star size={13} fill="currentColor" />
+          {entity.rating?.toFixed(1) ?? "—"}
+        </span>
+      </div>
+      <div className="slide-content">
+        <div className="title-meta">
+          <span>{entity.kind === "tv" ? "TV SERIES" : "FILM"}</span>
+          <span>{entity.year ?? "Date unavailable"}</span>
+          {entity.genres?.slice(0, 2).map((g) => (
+            <span key={g}>{genres.find(([id]) => g === `tmdb:genre:${id}`)?.[1]}</span>
+          ))}
+        </div>
+        <Link to="/title/$id" params={{ id: entity.id }} className="slide-title">
+          <h2>{entity.title}</h2>
+          <ArrowUpRight />
+        </Link>
+        <p className="slide-overview">
+          {entity.overview || "Every story starts with a little curiosity. Explore the details."}
+        </p>
+        <Tags entity={entity} userId={userId} />
+      </div>
+    </article>
+  );
+});
 export function Discover({ userId }: { userId: string }) {
   const location = useLocation(),
     navigate = useNavigate();
@@ -86,37 +129,55 @@ export function Discover({ userId }: { userId: string }) {
     [genreSheet, setGenreSheet] = useState(false),
     [active, setActive] = useState(0),
     swiper = useRef<SwiperType | null>(null);
-  const matching = queries
-      .filter(
-        (q) =>
-          q.id.startsWith("discover:") && signature(q.data.params as FeedParams) === displayKey,
-      )
-      .sort((a, b) => Number(a.id.split(":").at(-1)) - Number(b.id.split(":").at(-1))),
-    pages = matching.map((q) => ({
-      id: q.id,
-      ids: q.data.ids as string[],
-      coverage: q.data.coverage as Coverage,
-      params: q.data.params as FeedParams,
-    }));
-  const ids = [...new Set(pages.flatMap((p) => p.ids))],
-    byId = new Map([...movies, ...series].map((e) => [e.id, e])),
-    titles = ids
-      .map((id) => byId.get(id))
-      .filter((e): e is Entity => !!e)
-      .filter((e) =>
-        localMatch(
-          e,
-          params,
-          statuses.find((s) => s.data.userId === userId && s.data.titleId === e.id)?.data as
-            | { seen: boolean; sentiment: string }
-            | undefined,
-          new Set(
-            listItems.filter((i) => i.data.titleId === e.id).map((i) => String(i.data.listId)),
-          ),
-          true,
-        ),
+  const pages = useMemo(
+    () =>
+      queries
+        .filter(
+          (q) =>
+            q.id.startsWith("discover:") && signature(q.data.params as FeedParams) === displayKey,
+        )
+        .sort((a, b) => Number(a.id.split(":").at(-1)) - Number(b.id.split(":").at(-1)))
+        .map((q) => ({
+          id: q.id,
+          ids: q.data.ids as string[],
+          coverage: q.data.coverage as Coverage,
+          params: q.data.params as FeedParams,
+        })),
+    [queries, displayKey],
+  );
+  // Index once per change instead of scanning every status and list item for every title.
+  const statusByTitle = useMemo(
+    () =>
+      new Map(
+        statuses
+          .filter((s) => s.data.userId === userId)
+          .map((s) => [String(s.data.titleId), s.data as { seen: boolean; sentiment: string }]),
       ),
-    last = pages.at(-1),
+    [statuses, userId],
+  );
+  const listsByTitle = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const i of listItems) {
+      const title = String(i.data.titleId);
+      map.set(title, (map.get(title) ?? new Set()).add(String(i.data.listId)));
+    }
+    return map;
+  }, [listItems]);
+  const byId = useMemo(
+    () => new Map([...movies, ...series].map((e) => [e.id, e])),
+    [movies, series],
+  );
+  const titles = useMemo(
+    () =>
+      [...new Set(pages.flatMap((p) => p.ids))]
+        .map((id) => byId.get(id))
+        .filter((e): e is Entity => !!e)
+        .filter((e) =>
+          localMatch(e, params, statusByTitle.get(e.id), listsByTitle.get(e.id) ?? new Set(), true),
+        ),
+    [pages, byId, params, statusByTitle, listsByTitle],
+  );
+  const last = pages.at(-1),
     coverage = last?.coverage;
   const update = (patch: Partial<FeedParams>) =>
     void navigate({
@@ -155,14 +216,11 @@ export function Discover({ userId }: { userId: string }) {
     const cleanups = pages.map((p) => subscribeQuery(p.id, p.params));
     return () => cleanups.forEach((fn) => fn());
   }, [pages.map((p) => p.id).join("|")]);
-  useEffect(
-    () =>
-      preloadTitles(
-        titles.slice(Math.max(0, active - 1), active + 4).map((e) => e.id),
-        userId,
-      ),
-    [active, titles.map((t) => t.id).join("|"), userId],
-  );
+  const nearby = titles
+    .slice(active, active + 4)
+    .map((e) => e.id)
+    .join("|");
+  useEffect(() => (nearby ? preloadTitles(nearby.split("|")) : undefined), [nearby]);
   const approachingEnd = titles.length - active <= 12;
   useEffect(() => {
     if (!approachingEnd || !coverage?.nextCursor || coverage.state !== "complete") return;
@@ -283,40 +341,7 @@ export function Discover({ userId }: { userId: string }) {
             >
               {titles.map((entity, index) => (
                 <SwiperSlide key={entity.id} virtualIndex={index}>
-                  <article className="discovery-slide">
-                    <Poster entity={entity} priority={index === active} />
-                    <div className="poster-shade" />
-                    <div className="slide-top">
-                      <span className="editorial-badge">
-                        <Sparkles size={13} />
-                        {entity.kind === "tv" ? "THE SERIES EDIT" : "THE FILM EDIT"}
-                      </span>
-                      <span className="slide-rating">
-                        <Star size={13} fill="currentColor" />
-                        {entity.rating?.toFixed(1) ?? "—"}
-                      </span>
-                    </div>
-                    <div className="slide-content">
-                      <div className="title-meta">
-                        <span>{entity.kind === "tv" ? "TV SERIES" : "FILM"}</span>
-                        <span>{entity.year ?? "Date unavailable"}</span>
-                        {entity.genres?.slice(0, 2).map((g) => (
-                          <span key={g}>
-                            {genres.find(([id]) => g === `tmdb:genre:${id}`)?.[1]}
-                          </span>
-                        ))}
-                      </div>
-                      <Link to="/title/$id" params={{ id: entity.id }} className="slide-title">
-                        <h2>{entity.title}</h2>
-                        <ArrowUpRight />
-                      </Link>
-                      <p className="slide-overview">
-                        {entity.overview ||
-                          "Every story starts with a little curiosity. Explore the details."}
-                      </p>
-                      <Tags entity={entity} userId={userId} />
-                    </div>
-                  </article>
+                  <Slide entity={entity} priority={index === active} userId={userId} />
                 </SwiperSlide>
               ))}
             </Swiper>

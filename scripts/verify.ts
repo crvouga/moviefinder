@@ -52,6 +52,8 @@ try {
     "--dir",
     "file://atlas/migrations",
   ]);
+  // Browser tests serve dist/, so a stale build would silently test old client code.
+  if (mode === "e2e") await run(["bun", "x", "--no-install", "vp", "build"]);
   await run(
     mode === "e2e"
       ? ["bun", "x", "--no-install", "playwright", "test", ...process.argv.slice(3)]
