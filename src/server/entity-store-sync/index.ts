@@ -87,25 +87,83 @@ export function createSync(db: Database, tmdb: Tmdb) {
   };
 
   let stopped = false;
+  let started = false;
+  let ticking = false;
+  let rerun = false;
+  // Jobs finished by this process, so a request can wait for its own hydration instead of polling.
+  const waiters = new Map<string, Set<() => void>>();
+  const finished = (jobId: string) => {
+    for (const wake of waiters.get(jobId) ?? []) wake();
+    waiters.delete(jobId);
+  };
   let connectionFailures = 0;
   let lastDatabaseLog = -Infinity;
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  async function enqueue(id: string, kind: string, params: Record<string, unknown>) {
+  // `delayMs` marks work nobody is waiting for. The provider lane is sequential and rate limited,
+  // so a person skimming past titles must not queue ahead of the one they open; a request with no
+  // delay promotes a job that is still waiting.
+  async function enqueue(id: string, kind: string, params: Record<string, unknown>, delayMs = 0) {
+    const due = new Date(Date.now() + delayMs);
     await db
       .insert(jobs)
-      .values({ id, kind, params })
+      .values({ id, kind, params, runAt: due })
       .onConflictDoUpdate({
         target: jobs.id,
         set: {
           state: sql`case when ${jobs.state} = 'done' or (${jobs.state} = 'failed' and ${jobs.runAt} <= now()) then 'pending' else ${jobs.state} end`,
-          runAt: sql`case when ${jobs.state} = 'done' then now() else ${jobs.runAt} end`,
+          runAt: delayMs
+            ? sql`case when ${jobs.state} = 'done' then ${due} else ${jobs.runAt} end`
+            : sql`case when ${jobs.state} = 'done' then now() when ${jobs.state} = 'pending' then least(${jobs.runAt}, now()) else ${jobs.runAt} end`,
           attempts: sql`case when ${jobs.state} = 'done' then 0 else ${jobs.attempts} end`,
         },
       });
+    if (!delayMs) kick();
   }
-  async function hydrate(id: string) {
-    return enqueue(`entity:${id}`, "entity", { id });
+  async function hydrate(id: string, delayMs = 0) {
+    return enqueue(`entity:${id}`, "entity", { id }, delayMs);
+  }
+  // Resolves true when the title's hydration job finishes (or already had), false on timeout or
+  // when no worker runs in this process. Callers fall back to events in that case.
+  async function settled(id: string, timeoutMs: number, signal?: AbortSignal) {
+    if (!started || stopped) return false;
+    const jobId = `entity:${id}`;
+    let wake!: () => void;
+    const done = new Promise<boolean>((resolve) => {
+      wake = () => resolve(true);
+    });
+    const set = waiters.get(jobId) ?? new Set();
+    set.add(wake);
+    waiters.set(jobId, set);
+    try {
+      const [job] = await db.select({ state: jobs.state }).from(jobs).where(eq(jobs.id, jobId));
+      if (!job || job.state === "done" || job.state === "failed") return true;
+      return await new Promise<boolean>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        const abortNow = () => {
+          clearTimeout(timer);
+          reject(signal!.reason);
+        };
+        signal?.addEventListener("abort", abortNow, { once: true });
+        void done.then((value) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abortNow);
+          resolve(value);
+        });
+      });
+    } finally {
+      set.delete(wake);
+    }
+  }
+  // New work should not wait for the next poll.
+  function kick() {
+    if (!started || stopped) return;
+    if (ticking) {
+      rerun = true;
+      return;
+    }
+    if (timer) clearTimeout(timer);
+    void tick();
   }
   async function runJob(job: typeof jobs.$inferSelect) {
     if (job.kind === "entity") {
@@ -224,7 +282,20 @@ export function createSync(db: Database, tmdb: Tmdb) {
     }
   }
   async function tick() {
-    if (stopped) return;
+    if (stopped || ticking) return;
+    ticking = true;
+    try {
+      await pollOnce();
+    } finally {
+      ticking = false;
+      if (rerun && !stopped) {
+        rerun = false;
+        if (timer) clearTimeout(timer);
+        void tick();
+      }
+    }
+  }
+  async function pollOnce() {
     let nextPoll = 800;
     try {
       const claimed = await db.transaction(async (tx) => {
@@ -256,6 +327,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
         try {
           await runJob(job);
           metrics.syncSuccess++;
+          finished(job.id);
         } catch (error) {
           if (stopped) break;
           metrics.syncFailure++;
@@ -292,6 +364,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
               .set({ lastFailure: new Date(), error: message })
               .where(eq(sources.id, fieldText(job.params.id)));
           log("sync", message, { job: job.id, attempt: job.attempts });
+          finished(job.id);
         }
       }
     } catch (error) {
@@ -332,8 +405,11 @@ export function createSync(db: Database, tmdb: Tmdb) {
     tick,
     warm,
     start() {
+      started = true;
       void tick();
     },
+    settled,
+    kick,
     stop() {
       stopped = true;
       abort.abort();

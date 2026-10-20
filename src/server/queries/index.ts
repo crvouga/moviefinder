@@ -24,7 +24,7 @@ export function defineQuery<P, C, R>(definition: {
   name: string;
   params: z.ZodType<P>;
   readCache: (params: P, signal?: AbortSignal) => Promise<C>;
-  loadCache: (params: P, cache: C) => Promise<void>;
+  loadCache: (params: P, cache: C, signal?: AbortSignal) => Promise<void>;
   normalize: (cache: C, params: P) => R;
 }) {
   return {
@@ -35,7 +35,7 @@ export function defineQuery<P, C, R>(definition: {
       signal?.throwIfAborted();
       const cached = await definition.readCache(params, signal);
       signal?.throwIfAborted();
-      await definition.loadCache(params, cached);
+      await definition.loadCache(params, cached, signal);
       const result = definition.normalize(cached, params);
       metrics.queries++;
       metrics.queryMilliseconds += performance.now() - start;
@@ -242,7 +242,41 @@ export function createQueries(db: Database, sync: Sync) {
         };
       },
     });
-  const entity = (userId: string) =>
+  // Everything a title screen needs from one cached row.
+  function titleResult(
+    id: string,
+    row: typeof sources.$inferSelect | undefined,
+    tags: (typeof statuses.$inferSelect)[],
+  ): QueryResult {
+    return {
+      id: `entity:${id}`,
+      entities: [
+        ...(row ? normalizeSource(id, row.payload, row.version) : []),
+        ...tags.map((tag) => rowEntity("status", tag)),
+      ],
+      ids: row ? [id] : [],
+      coverage: {
+        state: !row
+          ? "missing"
+          : row.projection !== "detail"
+            ? "partial"
+            : row.refreshAt.getTime() < Date.now()
+              ? "stale"
+              : "complete",
+        fetchedAt: row?.fetchedAt.toISOString() ?? null,
+        nextCursor: null,
+        unsupported: [],
+        ...(row?.error ? { message: row.error } : {}),
+      },
+    };
+  }
+  const needsDetail = (row: typeof sources.$inferSelect | undefined) =>
+    !row || row.projection !== "detail";
+  // How long a request may wait for a cold title's hydration before events finish the job.
+  const hydrationWait = 2500;
+  // `warm` reads serve a hover or similar hint: they report what is cached and start no upstream
+  // work, so skimming across a grid cannot crowd out the title that is actually opened.
+  const entity = (userId: string, warm = false) =>
     defineQuery({
       name: "entity",
       params: sourceId,
@@ -254,41 +288,55 @@ export function createQueries(db: Database, sync: Sync) {
           .where(and(eq(statuses.userId, userId), eq(statuses.titleId, id)));
         return { row, tags };
       },
-      async loadCache(id, { row }) {
-        if (!row || row.projection !== "detail" || row.refreshAt.getTime() < Date.now())
+      async loadCache(id, cache, signal) {
+        const { row } = cache;
+        if (warm) return;
+        if (!row || row.projection !== "detail" || row.refreshAt.getTime() < Date.now()) {
           await sync.hydrate(id);
+          // A cold title usually finishes within the provider's round trip, so answer with it
+          // here instead of making the browser wait for an event and ask again.
+          if (needsDetail(row) && (await sync.settled(id, hydrationWait, signal)))
+            [cache.row] = await db.select().from(sources).where(eq(sources.id, id));
+        }
       },
       normalize({ row, tags }, id): QueryResult {
-        return {
-          id: `entity:${id}`,
-          entities: [
-            ...(row ? normalizeSource(id, row.payload, row.version) : []),
-            ...tags.map((row) => rowEntity("status", row)),
-          ],
-          ids: row ? [id] : [],
-          coverage: {
-            state: !row
-              ? "missing"
-              : row.projection !== "detail"
-                ? "partial"
-                : row.refreshAt.getTime() < Date.now()
-                  ? "stale"
-                  : "complete",
-            fetchedAt: row?.fetchedAt.toISOString() ?? null,
-            nextCursor: null,
-            unsupported: [],
-            ...(row?.error ? { message: row.error } : {}),
-          },
-        };
+        return titleResult(id, row, tags);
       },
     });
+  // Several titles in one round trip, for warming what a person is likely to open next. Missing
+  // details are requested at low priority and arrive by event; nobody waits for them here.
+  async function titles(ids: string[], userId: string) {
+    const unique = [...new Set(ids)];
+    const rows = new Map(
+      (await db.select().from(sources).where(inArray(sources.id, unique))).map((row) => [
+        row.id,
+        row,
+      ]),
+    );
+    await Promise.all(
+      unique.filter((id) => needsDetail(rows.get(id))).map((id) => sync.hydrate(id, 1000)),
+    );
+    const tags = await db
+      .select()
+      .from(statuses)
+      .where(and(eq(statuses.userId, userId), inArray(statuses.titleId, unique)));
+    metrics.queries++;
+    return unique.map((id) =>
+      titleResult(
+        id,
+        rows.get(id),
+        tags.filter((tag) => tag.titleId === id),
+      ),
+    );
+  }
   // Registered definitions retain distinct cache, scheduling, and projection responsibilities.
   const definitions = { discover: discovery, entity };
   return {
     definitions,
     discover: (input: unknown, userId: string, signal?: AbortSignal) =>
       definitions.discover(userId).execute(input, signal),
-    entity: (id: string, userId: string, signal?: AbortSignal) =>
-      definitions.entity(userId).execute(id, signal),
+    entity: (id: string, userId: string, signal?: AbortSignal, warm = false) =>
+      definitions.entity(userId, warm).execute(id, signal),
+    titles,
   };
 }

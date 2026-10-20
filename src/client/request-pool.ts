@@ -6,6 +6,9 @@ type Entry<T> = {
   started: boolean;
   settled: boolean;
   expires: number;
+  // Whether the first interest was speculative, and the answer it received.
+  speculative: boolean;
+  value?: T;
 };
 
 // Retains only request metadata/results such as query IDs. Entities remain in TanStack DB.
@@ -23,12 +26,23 @@ export class RequestPool<T> {
   run(
     key: string,
     load: (signal: AbortSignal) => Promise<T>,
-    options: { signal?: AbortSignal; speculative?: boolean; ttl?: () => number } = {},
+    options: {
+      signal?: AbortSignal;
+      speculative?: boolean;
+      ttl?: () => number;
+      // A settled speculative answer satisfies a real request only if this accepts it, e.g.
+      // speculation may have declined to wait for work that navigation needs completed.
+      fresh?: (value: T) => boolean;
+    } = {},
   ): Promise<T> {
-    const { signal, speculative = false, ttl = () => 30_000 } = options;
+    const { signal, speculative = false, ttl = () => 30_000, fresh } = options;
     if (signal?.aborted) return Promise.reject(signal.reason);
     let entry = this.entries.get(key);
-    if (entry?.settled && entry.expires <= Date.now()) {
+    if (
+      entry?.settled &&
+      (entry.expires <= Date.now() ||
+        (!speculative && entry.speculative && fresh && !fresh(entry.value as T)))
+    ) {
       this.entries.delete(key);
       entry = undefined;
     }
@@ -47,6 +61,7 @@ export class RequestPool<T> {
         started: false,
         settled: false,
         expires: 0,
+        speculative,
         start: () => {
           if (entry!.started) return;
           entry!.started = true;
@@ -56,6 +71,7 @@ export class RequestPool<T> {
             .then(
               (value) => {
                 entry!.settled = true;
+                entry!.value = value;
                 entry!.expires = Date.now() + ttl();
                 resolve(value);
               },
@@ -119,8 +135,30 @@ export class RequestPool<T> {
     for (const entry of this.entries.values()) if (!entry.started) queued++;
     return queued;
   }
-  invalidate() {
-    for (const [key, entry] of this.entries) if (entry.settled) this.entries.delete(key);
+  // Drops completed results, optionally only those whose key matches. In-flight work is kept.
+  invalidate(match: (key: string) => boolean = () => true) {
+    for (const [key, entry] of this.entries)
+      if (entry.settled && match(key)) this.entries.delete(key);
+  }
+  // Records a result obtained some other way, e.g. one response that answered many keys.
+  prime(key: string, value: T, ttl: number, speculative = true) {
+    const current = this.entries.get(key);
+    if (current && !current.settled) return;
+    this.entries.set(key, {
+      controller: new AbortController(),
+      consumers: new Set(),
+      promise: Promise.resolve(value),
+      start: () => {},
+      started: true,
+      settled: true,
+      expires: Date.now() + ttl,
+      speculative,
+      value,
+    });
+  }
+  has(key: string) {
+    const entry = this.entries.get(key);
+    return !!entry && (!entry.settled || entry.expires > Date.now());
   }
   clear() {
     for (const entry of this.entries.values()) entry.controller.abort();

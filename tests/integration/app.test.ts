@@ -627,3 +627,66 @@ describe("database initialization diagnostics", () => {
     }
   });
 });
+describe("anticipatory title reads", () => {
+  const job = async (id: string) =>
+    (
+      await db
+        .select()
+        .from(schema.jobs)
+        .where(eq(schema.jobs.id, `entity:${id}`))
+    )[0];
+  it("answers a hover read from the cache and starts no upstream work", async () => {
+    const sync = createSync(db, fixtureUpstream),
+      query = createQueries(db, sync);
+    const result = await query.entity("tmdb:movie:7001", owner, undefined, true);
+    expect(result.coverage.state).toBe("missing");
+    expect(await job("tmdb:movie:7001")).toBeUndefined();
+  });
+  it("warms several titles in one read and queues missing ones behind real requests", async () => {
+    const sync = createSync(db, fixtureUpstream),
+      query = createQueries(db, sync);
+    const results = await query.titles(
+      ["tmdb:movie:550", "tmdb:movie:7002", "tmdb:movie:7002"],
+      owner,
+    );
+    expect(results.map((r) => r.id)).toEqual(["entity:tmdb:movie:550", "entity:tmdb:movie:7002"]);
+    expect(results[0]!.coverage.state).toBe("complete");
+    expect(results[1]!.coverage.state).toBe("missing");
+    const queued = (await job("tmdb:movie:7002"))!;
+    expect(queued.runAt.getTime()).toBeGreaterThan(Date.now() + 500);
+    // Opening the title promotes the same job instead of queueing a second one.
+    await sync.hydrate("tmdb:movie:7002");
+    const promoted = (await job("tmdb:movie:7002"))!;
+    expect(promoted.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(
+      await db.select().from(schema.jobs).where(eq(schema.jobs.id, "entity:tmdb:movie:7002")),
+    ).toHaveLength(1);
+  });
+  it("completes a cold title inside the request that asked for it", async () => {
+    const sync = createSync(db, fixtureUpstream),
+      query = createQueries(db, sync);
+    sync.start();
+    try {
+      const started = Date.now();
+      const result = await query.entity("tmdb:movie:7003", owner);
+      expect(result.coverage.state).toBe("complete");
+      expect(result.entities.some((e) => e.id === "tmdb:movie:7003")).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2400);
+    } finally {
+      sync.stop();
+    }
+  });
+  it("serves batches over the API", async () => {
+    const cookie = (await register("batcher")).cookie;
+    const res = await service.app.request("/api/titles?ids=tmdb:movie:550,tmdb:tv:1399", {
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).results).toHaveLength(2);
+    const bad = await service.app.request(
+      `/api/titles?ids=${Array.from({ length: 9 }, (_, i) => `tmdb:movie:${i + 1}`).join(",")}`,
+      { headers: { Cookie: cookie } },
+    );
+    expect(bad.status).toBe(400);
+  });
+});

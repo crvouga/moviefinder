@@ -146,13 +146,14 @@ type QueryRow = Entity;
 async function commit(change: {
   entities?: Entity[];
   removed?: { kind: Kind; id: string }[];
-  query?: QueryRow;
+  query?: QueryRow | QueryRow[];
 }) {
   await collectionsReady();
+  const queries = change.query ? [change.query].flat() : [];
   await Promise.all([
     ...applyMerge(change.entities ?? []),
     ...applyRemove(change.removed ?? []),
-    ...(change.query ? [collections.query.utils.writeUpsert(change.query)] : []),
+    ...(queries.length ? [collections.query.utils.writeUpsert(queries)] : []),
   ]);
 }
 export const merge = (entities: Entity[]) => commit({ entities });
@@ -200,10 +201,24 @@ export function encodeParams(p: FeedParams): Record<string, string> {
 export const requests = new RequestPool<string | null>(3, (event, fields) =>
   track("pool", event, fields),
 );
+// Cached reads are dropped precisely when an event or command says they changed (see
+// `staleKeys`), so a result can be trusted for a while. Incomplete ones are still followed live.
+const ttlFor = (state: string | undefined) => (state === "complete" ? 60_000 : 5_000);
 const queryTTL = (id: string) =>
-  (collections.query.get(id)?.data.coverage as { state?: string } | undefined)?.state === "complete"
-    ? 30_000
-    : 250;
+  ttlFor((collections.query.get(id)?.data.coverage as { state?: string } | undefined)?.state);
+// Which cached reads an event for these subscriptions (or a reset) makes stale.
+function staleKeys(subscriptionIds: Iterable<string>, reset = false) {
+  const ids = [...subscriptionIds];
+  return (key: string) =>
+    reset ||
+    ids.some((id) =>
+      id.startsWith("entity:")
+        ? key === id
+        : id.startsWith("discover:")
+          ? key.startsWith("discover:")
+          : key.startsWith("social:") || key.startsWith("discover:"),
+    );
+}
 export function discover(
   params: FeedParams,
   signal?: AbortSignal,
@@ -249,7 +264,7 @@ function refetchSoon(id: string) {
       const sub = subscriptions.get(id);
       if (!sub) return;
       // The response that raised this event may have settled after it; never reuse that one.
-      requests.invalidate();
+      requests.invalidate(staleKeys([id]));
       void sub.reload().catch(report);
     }, 300),
   );
@@ -278,21 +293,68 @@ export function subscribeEntity(id: string) {
     else subscriptions.delete(key);
   };
 }
-export function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
+const coverageOf = (id: string) =>
+  (collections.query.get(`entity:${id}`)?.data.coverage as { state?: string } | undefined)?.state;
+const hydrated = (id: string) => ["complete", "stale"].includes(coverageOf(id) ?? "");
+export async function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
+  const read = () =>
+    requests.run(
+      `entity:${id}`,
+      (sharedSignal) =>
+        span("load", "entity", () => readEntity(id, sharedSignal, speculative), {
+          id,
+          speculative,
+        }),
+      {
+        signal,
+        speculative,
+        // A hover answer stays good until an event for this title says otherwise, and opening
+        // the title never reuses one that did not hydrate it (see `fresh`).
+        ttl: () => (speculative ? 60_000 : queryTTL(`entity:${id}`)),
+        // A hover read reports what is cached and starts no upstream work. Opening the title
+        // must not settle for that answer.
+        fresh: () => hydrated(id),
+      },
+    );
+  const result = await read();
+  // The request this one joined may have been a hover read that was already in flight.
+  return !speculative && !hydrated(id) && !signal?.aborted ? read() : result;
+}
+// Warms several titles with one request. Each is then answered from the pool like a single read.
+export function loadTitles(ids: string[], signal?: AbortSignal) {
+  const wanted = [...new Set(ids)].filter((id) => !requests.has(`entity:${id}`)).sort();
+  if (!wanted.length) return Promise.resolve(null);
   return requests.run(
-    `entity:${id}`,
+    `titles:${wanted.join(",")}`,
     (sharedSignal) =>
-      span("load", "entity", () => readEntity(id, sharedSignal), { id, speculative }),
-    {
-      signal,
-      speculative,
-      ttl: () => queryTTL(`entity:${id}`),
-    },
+      span("load", "titles", () => readTitles(wanted, sharedSignal), { count: wanted.length }),
+    { signal, speculative: true, ttl: () => 5_000 },
   );
 }
-async function readEntity(id: string, signal: AbortSignal) {
+async function readTitles(ids: string[], signal: AbortSignal) {
+  const { results } = await readResponse<{ results: QueryResult[] }>(
+    await api.api.titles.$get({ query: { ids: ids.join(",") } }, { init: { signal } }),
+  );
+  signal.throwIfAborted();
+  await commit({
+    entities: results.flatMap((r) => r.entities),
+    query: results.map((r) => ({
+      id: r.id,
+      kind: "query" as const,
+      version: Date.now(),
+      title: "Details",
+      data: { ids: r.ids, coverage: r.coverage },
+    })),
+  });
+  for (const r of results) requests.prime(r.id, r.id, ttlFor(r.coverage.state), true);
+  return null;
+}
+async function readEntity(id: string, signal: AbortSignal, speculative: boolean) {
   const res = await readResponse<QueryResult>(
-    await api.api.title[":id"].$get({ param: { id } }, { init: { signal } }),
+    await api.api.title[":id"].$get(
+      { param: { id }, query: speculative ? { warm: "1" } : {} },
+      { init: { signal } },
+    ),
   );
   signal.throwIfAborted();
   await commit({
@@ -361,7 +423,7 @@ export async function startSync(userId: string) {
         events++;
       }
       if (!events) return;
-      requests.invalidate();
+      requests.invalidate(staleKeys(refetch, reset));
       await commit({ entities, removed });
       track("sse", "batch", {
         ms: Math.round(performance.now() - handling),
@@ -668,7 +730,8 @@ export async function command(
             outbox.alias(userId, c.operationId, item.id);
           }
         }
-        requests.invalidate();
+        // Commands change what feeds and lists show; the entities they touch arrive merged.
+        requests.invalidate((key) => !key.startsWith("entity:"));
         await commit(result);
       });
     lanes.set(key, pending);

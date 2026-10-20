@@ -164,11 +164,39 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
         throw error;
       }
     })
-    .get("/api/title/:id", async (c) => {
-      const parsed = sourceId.safeParse(c.req.param("id"));
-      if (!parsed.success) throw new AppError(400, "Invalid canonical title identity");
-      return c.json(await queries.entity(parsed.data, c.get("userId"), c.req.raw.signal));
-    })
+    .get(
+      "/api/title/:id",
+      zValidator("query", z.object({ warm: z.literal("1").optional() })),
+      async (c) => {
+        const parsed = sourceId.safeParse(c.req.param("id"));
+        if (!parsed.success) throw new AppError(400, "Invalid canonical title identity");
+        return c.json(
+          await queries.entity(
+            parsed.data,
+            c.get("userId"),
+            c.req.raw.signal,
+            c.req.valid("query").warm === "1",
+          ),
+        );
+      },
+    )
+    .get(
+      "/api/titles",
+      zValidator(
+        "query",
+        z.object({
+          ids: z
+            .string()
+            .max(1200)
+            .transform((v) => v.split(",").filter(Boolean))
+            .pipe(z.array(sourceId).min(1).max(8)),
+        }),
+      ),
+      async (c) =>
+        c.json({
+          results: await queries.titles(c.req.valid("query").ids, c.get("userId")),
+        }),
+    )
     .get(
       "/api/social-search",
       zValidator(

@@ -220,10 +220,7 @@ export function Discover({ userId }: { userId: string }) {
     .slice(active, active + 4)
     .map((e) => e.id)
     .join("|");
-  useEffect(
-    () => (nearby ? preloadTitles(nearby.split("|"), userId) : undefined),
-    [nearby, userId],
-  );
+  useEffect(() => (nearby ? preloadTitles(nearby.split("|")) : undefined), [nearby]);
   const approachingEnd = titles.length - active <= 12;
   useEffect(() => {
     if (!approachingEnd || !coverage?.nextCursor || coverage.state !== "complete") return;

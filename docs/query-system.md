@@ -19,24 +19,43 @@ Query counters, latency, cache hits/misses, provider requests/rate limits, and f
 Authenticated navigation warms screen code, canonical collection data and title
 artwork only for a link the person is aiming at: pointer hover (after a short
 pause), keyboard focus and primary press-down. Nothing is predicted from what
-merely happens to be visible. Discovery additionally warms data for the current
-and next title and artwork for the two after them, but only once the feed has
-rested for 400 ms, so swiping quickly through slides starts no requests. It
-requests the next result page twelve slides before the end. Predicted requests
-share a three-request budget. Actual navigation promotes queued work immediately
-and joins in-flight reads. Route loaders prepare the module and first cache
-response before committing the destination.
+merely happens to be visible. Discovery additionally warms the current and next
+title with **one** batched read (`GET /api/titles?ids=`, at most eight) and
+artwork for the two after them, but only once the feed has rested for 400 ms, so
+swiping quickly through slides starts no requests. It requests the next result
+page twelve slides before the end. Predicted requests share a three-request
+budget. Actual navigation promotes queued work immediately and joins in-flight
+reads. Route loaders prepare the module and first cache response before
+committing the destination, using the signed-in user remembered from the session
+hook rather than asking the server on every navigation.
+
+**Speculation is cheap and never takes the provider's turn.** A hover read
+(`/api/title/:id?warm=1`) reports what the server already has and starts no
+upstream work, so skimming across a grid cannot queue provider calls ahead of
+the title that is opened. Batched warming queues missing titles one second out;
+opening a title promotes the same durable job to now. The provider lane is
+sequential and rate limited, so order matters more than count. A real request
+for a cold title waits for its own hydration (up to 2.5 s, signalled in-process
+when the job finishes, with the worker woken immediately instead of at the next
+poll) and answers with the complete graph in one round trip; if the provider is
+slow, events finish the job as before. A real request never accepts a hover
+answer that did not hydrate the title.
+
+**Cached reads are dropped precisely.** A completed read is trusted for 60 s
+(5 s while coverage is incomplete) and is dropped only when something says it
+changed: an SSE event for its subscription (`entity:<id>` drops that title,
+`discover:` drops feeds, anything else drops lists and feeds) or a command (which
+drops feeds and lists; entities arrive merged in its response). Speculative
+answers are keyed the same way and survive until such an event.
 
 Request metadata retains query IDs only; all entities remain in TanStack DB.
 Speculation performs one read and never polls: server hydration is durable and
 shared, and its progress arrives over SSE. Leaving an intent, changing routes,
 hiding the tab or signing out releases that interest and aborts reads with no
-remaining consumers. Completed request metadata expires quickly and is
-invalidated by committed commands/SSE events.
+remaining consumers.
 
 SSE events are applied in bursts. Events received within 40 ms become one
 collection commit (all kinds written in the same tick, so React renders once),
-versions already held are not rewritten, and the re-read of a subscribed query
-is coalesced to one trailing request per 300 ms. See
-[observability](observability.md) for measuring this.
+and the re-read of a subscribed query is coalesced to one trailing request per
+300 ms. See [observability](observability.md) for measuring this.
 Cold provider misses and upstream outages can still produce progressive content.

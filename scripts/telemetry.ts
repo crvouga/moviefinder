@@ -97,6 +97,42 @@ if (command === "slow") {
   for (const row of picked) console.log(JSON.stringify(row));
   process.exit(0);
 }
+// Requests the browser repeated: same route and parameters again after it already had an answer.
+// Each repeat is a round trip, a server query and a parse that changed nothing.
+function redundancy() {
+  const fetches = only("fetch", "client").filter(
+    (r) => !r.failed && r.status === 200 && r.name.startsWith("GET "),
+  );
+  const seen = new Map<string, number>();
+  const repeats = new Map<string, { n: number; kb: number }>();
+  for (const r of fetches) {
+    const key = `${r.name}${r.query ? `?${r.query}` : ""}`;
+    if (seen.has(key)) {
+      const entry = repeats.get(key) ?? { n: 0, kb: 0 };
+      entry.n++;
+      entry.kb += num(r.bytes) / 1024;
+      repeats.set(key, entry);
+    }
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+  }
+  const pool = only("pool", "client");
+  const reads = pool.filter((r) => r.name === "request" || r.name === "join");
+  return {
+    fetches: fetches.length,
+    repeatedFetches: [...repeats.values()].reduce((n, e) => n + e.n, 0),
+    repeatedKB: Math.round([...repeats.values()].reduce((n, e) => n + e.kb, 0)),
+    sessionChecks: only("http", "server").filter((r) => r.name === "GET /api/auth/get-session")
+      .length,
+    poolHitRate: reads.length
+      ? Math.round((100 * reads.filter((r) => r.settled === true).length) / reads.length)
+      : null,
+    cancelledStarted: pool.filter((r) => r.name === "cancel" && r.started === true).length,
+    worst: [...repeats]
+      .sort((a, b) => b[1].n - a[1].n)
+      .slice(0, 5)
+      .map(([name, e]) => ({ name, extra: e.n })),
+  };
+}
 const speculative = (r: Row) => r.speculative === true;
 const loads = only("load", "client");
 const pool = only("pool", "client");
@@ -129,6 +165,7 @@ const summary = {
   sse: Object.fromEntries(
     [...group(only("sse", "server"), (r) => r.name)].map(([k, v]) => [k, v.length]),
   ),
+  redundancy: redundancy(),
   clientFetch: table(
     only("fetch", "client"),
     (r) => `${r.name}${r.failed ? ` (${r.failed})` : ""}`,

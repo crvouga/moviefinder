@@ -1,5 +1,5 @@
 import { feedParams } from "../shared/contracts";
-import { discover, loadEntity, loadSocial, getEntity } from "./state";
+import { discover, loadEntity, loadSocial, loadTitles, getEntity } from "./state";
 import { screenModules } from "./screen-modules";
 import { track } from "./telemetry";
 
@@ -95,22 +95,20 @@ function warmImages(href: string, signal: AbortSignal) {
   if (signal.aborted) cancel();
 }
 
-// Discovery warms the title being looked at and the next one, plus artwork for what follows.
-// Nothing starts until the feed has rested, so swiping quickly through slides costs nothing.
-export function preloadTitles(ids: string[], userId: string, settle = 400) {
+// Discovery warms the title being looked at and the next one in a single request, plus artwork
+// for what follows. Nothing starts until the feed has rested, so swiping quickly costs nothing.
+export function preloadTitles(ids: string[], settle = 400) {
   const controller = new AbortController();
   const start = setTimeout(() => {
     track("preload", "titles", { count: ids.length });
-    ids.forEach((id, index) => {
-      const href = `/title/${encodeURIComponent(id)}`;
-      warmImages(href, controller.signal);
-      if (index > 1) return;
-      void prepareScreen(href, userId, controller.signal, true)
-        .then(() => {
-          if (!controller.signal.aborted) warmImages(href, controller.signal);
-        })
-        .catch(() => {});
-    });
+    void screenModules.details().catch(() => {});
+    for (const id of ids) warmImages(`/title/${encodeURIComponent(id)}`, controller.signal);
+    void loadTitles(ids.slice(0, 2), controller.signal)
+      .then(() => {
+        if (controller.signal.aborted) return;
+        for (const id of ids) warmImages(`/title/${encodeURIComponent(id)}`, controller.signal);
+      })
+      .catch(() => {});
   }, settle);
   return () => {
     clearTimeout(start);

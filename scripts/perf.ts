@@ -268,9 +268,34 @@ try {
     await page.locator(".discovery-slide").first().waitFor();
   });
   // People and long series are the heaviest screens, and cost grows as the cache fills.
+  // What a person feels: from the click to the page being filled in, and how many reads it took.
+  await mark("cold navigation to five people", async () => {
+    await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
+    await page.locator(".person-card").first().waitFor({ timeout: 60000 });
+    const cards = page.locator(".person-card");
+    const times: number[] = [];
+    let reads = 0;
+    page.on("request", (r) => /\/api\/titles?[/?]/.test(r.url()) && reads++);
+    for (const n of [20, 22, 24, 26, 28]) {
+      await page.waitForTimeout(1500);
+      const started = Date.now();
+      await cards.nth(n).click();
+      await page.getByRole("heading", { name: "A career in stories." }).waitFor({ timeout: 30000 });
+      times.push(Date.now() - started);
+      await page.goBack();
+      await page.locator(".person-card").first().waitFor({ timeout: 30000 });
+    }
+    console.log(`  to filmography (ms): ${times.join(", ")}; title reads: ${reads}`);
+  });
   await mark("browse people and series without reloading", async () => {
     await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
     await page.locator(".detail-intro h1").waitFor({ timeout: 60000 });
+    // Skimming across the cast the way a pointer does, twice: the second pass should be free.
+    for (let pass = 0; pass < 2; pass++)
+      for (const card of await page.locator(".person-card").all()) {
+        await card.hover();
+        await page.waitForTimeout(160);
+      }
     // Client-side navigation only, so the collections keep growing like a long real session.
     for (let step = 0; step < 24; step++) {
       await page.waitForTimeout(1200);

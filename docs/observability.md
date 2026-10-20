@@ -25,6 +25,7 @@ response is the first thing to look for when a screen is slow), database stateme
 repeated), TMDB requests, snapshot size, event-loop lag, SSE traffic, browser fetches (including
 aborted ones), the request pool (requests, joins, cancellations), preload activity, collection
 merge cost, long tasks and long animation frames with the responsible script, slow interactions,
+`redundancy` (repeated identical reads, the kilobytes they cost, session checks and the pool hit rate),
 React commit time per screen and path, main-thread stalls by path (timer lateness, so it works in
 WebKit and Firefox, which lack long-task entries), route transitions, peak collection sizes
 (`n_<kind>`), DOM size and heap, and uncaught errors.
@@ -47,7 +48,9 @@ bun run perf --titles 5000 --json
 catalog 20 titles per page with provider latency (including series with thousands of credits and
 people with hundreds), runs the real Vite client in headless Chromium, registers, scrolls 30
 slides, tags, browses people and series without reloading so the collections keep growing, fills
-lists and tags, visits every screen, then prints the telemetry summary. Compare
+lists and tags, visits every screen, then prints the telemetry summary. The "cold navigation"
+step prints the time from clicking a person to their filmography appearing and how many title reads
+it took; use it to judge preloading changes. Compare
 `longTasks`, `renders`, `requestPool` and `clientFetch` before and after a change. It makes no
 network requests and never touches the local development database.
 

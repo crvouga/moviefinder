@@ -439,7 +439,7 @@ test("starts data reads on hover, focus and press before navigating, and aborts 
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/api/title/*92000", async (route) => {
+  await page.route("**/api/title/*92000*", async (route) => {
     await blocked;
     await route.continue().catch(() => {});
   });

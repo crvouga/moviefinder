@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { Film } from "lucide-react";
 import { authClient } from "./auth-client";
+import { currentUserId, rememberUser } from "./session";
 import { report } from "./notifications";
 import { screenModules } from "./screen-modules";
 import { Toast } from "./components/toast";
@@ -52,6 +53,9 @@ function Root() {
     navigate = useNavigate(),
     session = authClient.useSession(),
     isAuth = location.pathname.startsWith("/auth");
+  useEffect(() => {
+    if (!session.isPending) rememberUser(session.data?.user.id);
+  }, [session.isPending, session.data?.user.id]);
   useEffect(() => {
     if (!isAuth && !session.isPending && !session.data)
       void navigate({ to: "/auth", search: { returnTo: location.href }, replace: true });
@@ -161,11 +165,11 @@ async function loadScreen({
   location: { href: string };
   abortController: AbortController;
 }) {
-  const session = await authClient.getSession();
-  if (!session.data || abortController.signal.aborted) return;
+  const userId = await currentUserId();
+  if (!userId || abortController.signal.aborted) return;
   try {
     const { prepareScreen } = await import("./preloading");
-    await prepareScreen(location.href, session.data.user.id, abortController.signal);
+    await prepareScreen(location.href, userId, abortController.signal);
   } catch (error) {
     if (!abortController.signal.aborted) report(error);
   }
