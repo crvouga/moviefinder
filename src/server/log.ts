@@ -1,3 +1,4 @@
+import { record } from "./telemetry";
 export const metrics = {
   cacheHit: 0,
   cacheMiss: 0,
@@ -15,6 +16,7 @@ export function log(
   message: string,
   fields: Record<string, string | number | boolean> = {},
 ) {
+  if (category !== "http") record("log", category, { message, ...fields });
   console.log(
     JSON.stringify({ timestamp: new Date().toISOString(), category, message, ...fields }),
   );

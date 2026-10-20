@@ -1,5 +1,5 @@
 import { parseSearch, stringifySearch } from "../shared/search";
-import { useEffect, lazy, Suspense } from "react";
+import { useEffect, lazy, Suspense, Profiler, type ProfilerOnRenderCallback } from "react";
 import {
   createRootRoute,
   createRoute,
@@ -15,6 +15,21 @@ import { authClient } from "./auth-client";
 import { report } from "./notifications";
 import { screenModules } from "./screen-modules";
 import { Toast } from "./components/toast";
+import { track, telemetryEnabled } from "./telemetry";
+
+const commit: ProfilerOnRenderCallback = (id, phase, actual, base) => {
+  if (actual >= 8)
+    track("render", id, { phase, ms: Math.round(actual * 10) / 10, base: Math.round(base) });
+};
+function Profiled({ id, children }: { id: string; children: React.ReactNode }) {
+  return telemetryEnabled ? (
+    <Profiler id={id} onRender={commit}>
+      {children}
+    </Profiler>
+  ) : (
+    children
+  );
+}
 
 const Navigation = lazy(() => import("./components/navigation"));
 let stateModule: Promise<typeof import("./state")> | undefined;
@@ -55,7 +70,7 @@ function Root() {
       live = false;
       dispose?.();
     };
-  }, [session.data?.user.id, isAuth, location.href]);
+  }, [session.data?.user.id, isAuth]);
   if (isAuth)
     return (
       <>
@@ -95,7 +110,9 @@ function Root() {
           </div>
         }
       >
-        <Navigation userId={session.data.user.id} />
+        <Profiled id="navigation">
+          <Navigation userId={session.data.user.id} />
+        </Profiled>
       </Suspense>
       <main className="app-main" id="main-content">
         <Suspense
@@ -106,7 +123,9 @@ function Root() {
             </div>
           }
         >
-          <Outlet />
+          <Profiled id="screen">
+            <Outlet />
+          </Profiled>
         </Suspense>
       </main>
       <Toast />
@@ -215,6 +234,15 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
   }
+}
+if (telemetryEnabled) {
+  let began = 0;
+  router.subscribe("onBeforeNavigate", () => (began = performance.now()));
+  router.subscribe("onResolved", (e) =>
+    track("route", e.toLocation.pathname, {
+      ms: began ? Math.round(performance.now() - began) : undefined,
+    }),
+  );
 }
 export function App() {
   return <RouterProvider router={router} />;

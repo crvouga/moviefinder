@@ -82,6 +82,7 @@ try {
         MOVIEFINDER_ORIGIN: origin,
         MOVIEFINDER_WEB_PORT: String(webPort),
         PORT: String(apiPort),
+        MOVIEFINDER_TELEMETRY_DIR: ".local/telemetry",
       };
       console.log(`Local PostgreSQL ready. Starting MovieFinder at ${origin}`);
       const backend = launch(

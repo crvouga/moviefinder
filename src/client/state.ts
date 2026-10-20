@@ -1,5 +1,6 @@
 import { RequestPool } from "./request-pool";
 import { createOutbox } from "./outbox";
+import { track, measure, span, count } from "./telemetry";
 const outbox = createOutbox(window.localStorage);
 const itemAliases = new Map<string, string>();
 import { fieldText } from "../shared/contracts";
@@ -52,9 +53,13 @@ export async function readResponse<T>(res: Pick<Response, "ok" | "status" | "jso
 }
 let initialRequest: Promise<{ entities: Entity[]; cursor: string }> | undefined;
 const loadSnapshot = () =>
-  (initialRequest ??= api.api.state
-    .$get()
-    .then((r) => readResponse<{ entities: Entity[]; cursor: string }>(r))
+  (initialRequest ??= span("snapshot", "load", () =>
+    api.api.state.$get().then((r) => readResponse<{ entities: Entity[]; cursor: string }>(r)),
+  )
+    .then((state) => {
+      track("snapshot", "size", { entities: state.entities.length });
+      return state;
+    })
     .catch((error) => {
       initialRequest = undefined;
       throw error;
@@ -81,28 +86,65 @@ export const collections = Object.fromEntries(
   kinds.map((kind) => [kind, makeCollection(kind)]),
 ) as Record<Kind, ReturnType<typeof makeCollection>>;
 const versions = new Map<string, number>();
-export async function merge(entities: Entity[]) {
+let loaded: Promise<unknown> | undefined;
+const collectionsReady = () =>
+  (loaded ??= Promise.all(Object.values(collections).map((c) => c.preload())).catch((error) => {
+    loaded = undefined;
+    throw error;
+  }));
+// Writes apply synchronously and wake every live query. Issuing all of them in one tick lets
+// React render once instead of once per collection, so never await between them.
+function applyMerge(entities: Entity[]) {
   const groups = new Map<Kind, Entity[]>();
   for (const e of entities) {
     const key = `${e.kind}:${e.id}`;
-    if (e.version < (versions.get(key) ?? -1)) continue;
+    const known = versions.get(key) ?? -1;
+    // Re-delivery of a version already in the collection would only wake every live query.
+    if (e.version < known || (e.version === known && collections[e.kind].has(e.id))) continue;
     versions.set(key, e.version);
     const group = groups.get(e.kind) ?? [];
     group.push(e);
     groups.set(e.kind, group);
   }
+  const writes: Promise<void>[] = [];
   for (const [kind, values] of groups) {
-    await collections[kind].preload();
-    await collections[kind].utils.writeUpsert([...new Map(values.map((e) => [e.id, e])).values()]);
+    const unique = [...new Map(values.map((e) => [e.id, e])).values()];
+    writes.push(
+      measure(
+        "merge",
+        kind,
+        () => collections[kind].utils.writeUpsert(unique),
+        { entities: unique.length, size: collections[kind].size },
+        2,
+      ),
+    );
   }
+  return writes;
 }
-async function remove(removed: { kind: Kind; id: string }[]) {
+function applyRemove(removed: { kind: Kind; id: string }[]) {
+  const writes: Promise<void>[] = [];
   for (const r of removed) {
     versions.set(`${r.kind}:${r.id}`, Infinity);
-    if (collections[r.kind].has(r.id)) await collections[r.kind].utils.writeDelete(r.id);
+    if (collections[r.kind].has(r.id)) writes.push(collections[r.kind].utils.writeDelete(r.id));
   }
+  return writes;
 }
+type QueryRow = Entity;
+async function commit(change: {
+  entities?: Entity[];
+  removed?: { kind: Kind; id: string }[];
+  query?: QueryRow;
+}) {
+  await collectionsReady();
+  await Promise.all([
+    ...applyMerge(change.entities ?? []),
+    ...applyRemove(change.removed ?? []),
+    ...(change.query ? [collections.query.utils.writeUpsert(change.query)] : []),
+  ]);
+}
+export const merge = (entities: Entity[]) => commit({ entities });
 export function useEntities(kind: Kind) {
+  count(`render.useEntities.${kind}`);
   const result = useLiveQuery({ query: (q) => q.from({ entity: collections[kind] }) });
   return (result.data ?? []) as Entity[];
 }
@@ -128,6 +170,8 @@ export { notices, notify, report } from "./notifications";
 let syncRetry: ReturnType<typeof setTimeout> | undefined,
   syncEpoch = 0,
   syncFailures = 0;
+let eventBatch: string[] = [],
+  eventTimer: ReturnType<typeof setTimeout> | undefined;
 let source: EventSource | undefined,
   started = false,
   eventQueue = Promise.resolve();
@@ -139,7 +183,9 @@ export function encodeParams(p: FeedParams): Record<string, string> {
       .map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : fieldText(v)]),
   );
 }
-export const requests = new RequestPool<string | null>();
+export const requests = new RequestPool<string | null>(3, (event, fields) =>
+  track("pool", event, fields),
+);
 const queryTTL = (id: string) =>
   (collections.query.get(id)?.data.coverage as { state?: string } | undefined)?.state === "complete"
     ? 30_000
@@ -153,7 +199,9 @@ export function discover(
   return requests.run(
     `discover:${stableSerialize(params)}`,
     async (sharedSignal) => {
-      id = await readDiscovery(params, sharedSignal);
+      id = await span("load", "discover", () => readDiscovery(params, sharedSignal), {
+        speculative,
+      });
       return id;
     },
     { signal, speculative, ttl: () => queryTTL(id) },
@@ -164,16 +212,30 @@ async function readDiscovery(params: FeedParams, signal: AbortSignal) {
     await api.api.discover.$get({ query: encodeParams(params) }, { init: { signal } }),
   );
   signal.throwIfAborted();
-  await merge(result.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: result.id,
-    kind: "query",
-    version: Date.now(),
-    title: "Discovery",
-    data: { ids: result.ids, coverage: result.coverage, params },
+  await commit({
+    entities: result.entities,
+    query: {
+      id: result.id,
+      kind: "query",
+      version: Date.now(),
+      title: "Discovery",
+      data: { ids: result.ids, coverage: result.coverage, params },
+    },
   });
   return result.id;
+}
+// A hydration job emits an event every few titles. One trailing read per query is enough.
+const refetches = new Map<string, ReturnType<typeof setTimeout>>();
+function refetchSoon(id: string) {
+  if (refetches.has(id)) return;
+  refetches.set(
+    id,
+    setTimeout(() => {
+      refetches.delete(id);
+      const sub = subscriptions.get(id);
+      if (sub) void discover(sub.params).catch(report);
+    }, 300),
+  );
 }
 export function subscribeQuery(id: string, params: FeedParams) {
   const current = subscriptions.get(id);
@@ -188,31 +250,38 @@ export function subscribeQuery(id: string, params: FeedParams) {
   };
 }
 export function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
-  return requests.run(`entity:${id}`, (sharedSignal) => readEntity(id, sharedSignal), {
-    signal,
-    speculative,
-    ttl: () => queryTTL(`entity:${id}`),
-  });
+  return requests.run(
+    `entity:${id}`,
+    (sharedSignal) =>
+      span("load", "entity", () => readEntity(id, sharedSignal), { id, speculative }),
+    {
+      signal,
+      speculative,
+      ttl: () => queryTTL(`entity:${id}`),
+    },
+  );
 }
 async function readEntity(id: string, signal: AbortSignal) {
   const res = await readResponse<QueryResult>(
     await api.api.title[":id"].$get({ param: { id } }, { init: { signal } }),
   );
   signal.throwIfAborted();
-  await merge(res.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: res.id,
-    kind: "query",
-    version: Date.now(),
-    title: "Details",
-    data: { ids: res.ids, coverage: res.coverage },
+  await commit({
+    entities: res.entities,
+    query: {
+      id: res.id,
+      kind: "query",
+      version: Date.now(),
+      title: "Details",
+      data: { ids: res.ids, coverage: res.coverage },
+    },
   });
   return res.id;
 }
 export async function startSync(userId: string) {
   if (started) return;
   started = true;
+  const begun = performance.now();
   const epoch = syncEpoch;
   try {
     await Promise.all(
@@ -224,39 +293,63 @@ export async function startSync(userId: string) {
     const state = await loadSnapshot();
     if (epoch !== syncEpoch) return;
     syncFailures = 0;
+    track("sync", "ready", {
+      ms: Math.round(performance.now() - begun),
+      entities: state.entities.length,
+    });
     for (const e of state.entities) versions.set(`${e.kind}:${e.id}`, e.version);
     for (const pending of outbox.read(userId)) void command(pending, userId, pending).catch(report);
     let last = Number(state.cursor);
     source = new EventSource(`/api/events?cursor=${state.cursor}`);
+    // Hydrating one page emits an event per title. Apply a burst as one commit and one render.
+    const apply = async (raw: string[]) => {
+      const handling = performance.now();
+      let entities: Entity[] = [],
+        removed: { kind: Kind; id: string }[] = [];
+      const refetch = new Set<string>();
+      let reset = false,
+        events = 0;
+      for (const data of raw) {
+        const event = eventEnvelopeSchema.parse(JSON.parse(data));
+        if (event.protocol !== 1 || Number(event.id) <= last) continue;
+        if (event.type === "reset") {
+          for (const [kind, c] of Object.entries(collections)) {
+            const keys = [...c.keys()].filter(
+              (id) => kind === "query" || versions.has(`${kind}:${id}`),
+            );
+            if (keys.length) await c.utils.writeDelete(keys);
+          }
+          versions.clear();
+          // A snapshot supersedes everything accumulated before it.
+          entities = [];
+          removed = [];
+          reset = true;
+        }
+        entities.push(...event.entities);
+        removed.push(...event.removed);
+        refetch.add(event.subscription);
+        last = Number(event.id);
+        events++;
+      }
+      if (!events) return;
+      requests.invalidate();
+      await commit({ entities, removed });
+      track("sse", "batch", {
+        ms: Math.round(performance.now() - handling),
+        events,
+        entities: entities.length,
+        removed: removed.length,
+      });
+      for (const [id] of subscriptions) if (reset || refetch.has(id)) refetchSoon(id);
+    };
     source.addEventListener("change", (message: MessageEvent) => {
-      eventQueue = eventQueue
-        .then(async () => {
-          const event = eventEnvelopeSchema.parse(JSON.parse(message.data));
-          if (event.protocol !== 1 || Number(event.id) <= last) return;
-          if (event.type === "reset") {
-            for (const [kind, c] of Object.entries(collections)) {
-              const keys = [...c.keys()].filter(
-                (id) => kind === "query" || versions.has(`${kind}:${id}`),
-              );
-              if (keys.length) await c.utils.writeDelete(keys);
-            }
-            versions.clear();
-          }
-          requests.invalidate();
-          await merge(event.entities);
-          await remove(event.removed);
-          last = Number(event.id);
-          if (
-            event.type === "reset" ||
-            event.type === "complete" ||
-            subscriptions.has(event.subscription)
-          ) {
-            for (const [id, sub] of subscriptions)
-              if (event.type === "reset" || id === event.subscription)
-                void discover(sub.params).catch(report);
-          }
-        })
-        .catch(report);
+      eventBatch.push(message.data);
+      eventTimer ??= setTimeout(() => {
+        const raw = eventBatch;
+        eventBatch = [];
+        eventTimer = undefined;
+        eventQueue = eventQueue.then(() => apply(raw)).catch(report);
+      }, 40);
     });
     source.addEventListener("error", () =>
       notices.dispatchEvent(new CustomEvent("connection", { detail: "reconnecting" })),
@@ -276,6 +369,11 @@ export async function startSync(userId: string) {
 }
 export function stopSync() {
   requests.clear();
+  clearTimeout(eventTimer);
+  eventTimer = undefined;
+  eventBatch = [];
+  for (const timer of refetches.values()) clearTimeout(timer);
+  refetches.clear();
   syncEpoch++;
   if (syncRetry) clearTimeout(syncRetry);
   source?.close();
@@ -542,8 +640,7 @@ export async function command(
           }
         }
         requests.invalidate();
-        await merge(result.entities);
-        await remove(result.removed);
+        await commit(result);
       });
     lanes.set(key, pending);
     try {
@@ -609,14 +706,15 @@ async function readSocial(
             );
   const result = await readResponse<{ entities: Entity[]; nextCursor: string | null }>(response);
   signal.throwIfAborted();
-  await merge(result.entities);
-  await collections.query.preload();
-  await collections.query.utils.writeUpsert({
-    id: `social:${kind}:${value}`,
-    kind: "query",
-    version: Date.now(),
-    title: kind,
-    data: { nextCursor: result.nextCursor },
+  await commit({
+    entities: result.entities,
+    query: {
+      id: `social:${kind}:${value}`,
+      kind: "query",
+      version: Date.now(),
+      title: kind,
+      data: { nextCursor: result.nextCursor },
+    },
   });
   return result.nextCursor;
 }
@@ -630,7 +728,11 @@ export function loadSocial(
 ) {
   return requests.run(
     `social:${stableSerialize([kind, value, cursor])}`,
-    (sharedSignal) => readSocial(kind, value, cursor, sharedSignal),
+    (sharedSignal) =>
+      span("load", "social", () => readSocial(kind, value, cursor, sharedSignal), {
+        scope: kind,
+        speculative,
+      }),
     { signal, speculative, ttl: () => 5_000 },
   );
 }

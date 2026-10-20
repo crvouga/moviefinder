@@ -17,19 +17,26 @@ Query counters, latency, cache hits/misses, provider requests/rate limits, and f
 ## Anticipatory navigation
 
 Authenticated navigation warms screen code, canonical collection data and title
-artwork on pointer hover, keyboard focus and primary press-down. A viewport
-predictor warms four likely visible destinations; discovery additionally warms
-the current title, three upcoming titles and the previous title, and requests
-the next result page twelve slides before the end. Predicted requests share a
-three-request budget. Actual navigation promotes queued work immediately and
-joins in-flight reads. Route loaders prepare the module and first cache response
-before committing the destination.
+artwork only for a link the person is aiming at: pointer hover (after a short
+pause), keyboard focus and primary press-down. Nothing is predicted from what
+merely happens to be visible. Discovery additionally warms data for the current
+and next title and artwork for the two after them, but only once the feed has
+rested for 400 ms, so swiping quickly through slides starts no requests. It
+requests the next result page twelve slides before the end. Predicted requests
+share a three-request budget. Actual navigation promotes queued work immediately
+and joins in-flight reads. Route loaders prepare the module and first cache
+response before committing the destination.
 
 Request metadata retains query IDs only; all entities remain in TanStack DB.
-Incomplete speculative coverage is refreshed for at most fifteen seconds while
-interest remains. Leaving an intent, moving predictions out of view, changing
-routes, hiding the tab or signing out releases that interest and aborts reads
-with no remaining consumers. Shared server hydration jobs remain durable.
-Completed request metadata expires quickly and is invalidated by committed
-commands/SSE events. Save-Data and 2G connections disable viewport predictions.
+Speculation performs one read and never polls: server hydration is durable and
+shared, and its progress arrives over SSE. Leaving an intent, changing routes,
+hiding the tab or signing out releases that interest and aborts reads with no
+remaining consumers. Completed request metadata expires quickly and is
+invalidated by committed commands/SSE events.
+
+SSE events are applied in bursts. Events received within 40 ms become one
+collection commit (all kinds written in the same tick, so React renders once),
+versions already held are not rewritten, and the re-read of a subscribed query
+is coalesced to one trailing request per 300 ms. See
+[observability](observability.md) for measuring this.
 Cold provider misses and upstream outages can still produce progressive content.

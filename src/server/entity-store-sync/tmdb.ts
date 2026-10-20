@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { metrics } from "../log";
+import { record } from "../telemetry";
 export class UpstreamError extends Error {
   constructor(
     public status: number,
@@ -45,11 +46,17 @@ export function createTmdb(
     const url = new URL(`https://api.themoviedb.org/3/${path}`);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     metrics.upstreamRequests++;
+    const started = performance.now();
     const res = await transport(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
         : AbortSignal.timeout(15000),
+    });
+    record("upstream", `GET ${path}`, {
+      status: res.status,
+      ms: Math.round((performance.now() - started) * 10) / 10,
+      waited: delay,
     });
     if (!res.ok) {
       const retry = res.headers.get("Retry-After");

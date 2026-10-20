@@ -1,0 +1,63 @@
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  configureTelemetry,
+  flushTelemetry,
+  recentTelemetry,
+  record,
+  stopTelemetry,
+  telemetryEnabled,
+  timed,
+} from "../../src/server/telemetry";
+import { readConfig } from "../../src/server/config";
+
+const base = { DATABASE_URL: "postgres://x", BETTER_AUTH_SECRET: "s".repeat(32) };
+let directory: string | undefined;
+afterEach(async () => {
+  stopTelemetry();
+  if (directory) await rm(directory, { recursive: true, force: true });
+  directory = undefined;
+});
+describe("local development telemetry", () => {
+  it("records nothing unless a directory is configured", () => {
+    record("http", "GET /api/state", { ms: 1 });
+    expect(telemetryEnabled()).toBe(false);
+    expect(recentTelemetry()).toEqual([]);
+  });
+  it("appends newline-delimited events with durations and client origin", async () => {
+    directory = await mkdtemp(join(tmpdir(), "moviefinder-telemetry-"));
+    configureTelemetry(directory);
+    await timed("snapshot", "state", async () => "done", { entities: 3 });
+    record("longtask", "task", { ms: 120 }, "client", "2026-01-01T00:00:00.000Z");
+    flushTelemetry();
+    const lines = (await readFile(join(directory, "events.ndjson"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ source: "server", kind: "snapshot", entities: 3 });
+    expect(typeof lines[0].ms).toBe("number");
+    expect(lines[1]).toMatchObject({ source: "client", t: "2026-01-01T00:00:00.000Z" });
+  });
+  it("keeps the previous run when a new run starts", async () => {
+    directory = await mkdtemp(join(tmpdir(), "moviefinder-telemetry-"));
+    configureTelemetry(directory);
+    record("http", "first", {});
+    flushTelemetry();
+    configureTelemetry(directory);
+    expect(await readFile(join(directory, "events.previous.ndjson"), "utf8")).toContain("first");
+  });
+  it("is refused in production", () => {
+    expect(() =>
+      readConfig({
+        ...base,
+        NODE_ENV: "production",
+        MOVIEFINDER_ORIGIN: "https://example.test",
+        MOVIEFINDER_TELEMETRY_DIR: ".local/telemetry",
+      }),
+    ).toThrow("local development only");
+    expect(readConfig({ ...base, MOVIEFINDER_TELEMETRY_DIR: ".local/telemetry" })).toBeTruthy();
+  });
+});

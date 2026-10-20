@@ -5,6 +5,7 @@ export const configSchema = z.object({
   MOVIEFINDER_ORIGIN: z.url().default("http://localhost:5173"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  MOVIEFINDER_TELEMETRY_DIR: z.string().optional(),
   TMDB_API_READ_ACCESS_TOKEN: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
@@ -23,5 +24,7 @@ export function readConfig(env: Record<string, string | undefined>) {
     );
   if (result.data.NODE_ENV === "production" && !env.MOVIEFINDER_ORIGIN)
     throw new Error("MOVIEFINDER_ORIGIN is required in production");
+  if (result.data.NODE_ENV === "production" && result.data.MOVIEFINDER_TELEMETRY_DIR)
+    throw new Error("MOVIEFINDER_TELEMETRY_DIR is for local development only");
   return result.data;
 }

@@ -3,8 +3,10 @@ import { readConfig } from "./config";
 import { createDatabase } from "./db";
 import { createApplication } from "./app";
 import { log } from "./log";
-const config = readConfig(process.env),
-  { db, pool } = createDatabase(config.DATABASE_URL),
+import { configureTelemetry } from "./telemetry";
+const config = readConfig(process.env);
+configureTelemetry(config.MOVIEFINDER_TELEMETRY_DIR);
+const { db, pool } = createDatabase(config.DATABASE_URL),
   service = createApplication(db, config);
 serveClient(service.app, service.auth);
 const server = Bun.serve({

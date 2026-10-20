@@ -7,6 +7,8 @@
     "dev": "vault run -- bun scripts/dev.ts",
     "dev:local": "bun scripts/dev.ts",
     "start": "bun src/server/index.ts",
+    "telemetry": "bun scripts/telemetry.ts",
+    "perf": "bun scripts/perf.ts",
     "build": "vp build",
     "check": "vp check && vp test run --project unit",
     "test": "vp test run --project unit",

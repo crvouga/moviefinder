@@ -12,7 +12,13 @@ type Entry<T> = {
 export class RequestPool<T> {
   private entries = new Map<string, Entry<T>>();
   private running = 0;
-  constructor(private concurrency = 3) {}
+  constructor(
+    private concurrency = 3,
+    private onEvent: (
+      event: string,
+      fields: Record<string, string | number | boolean>,
+    ) => void = () => {},
+  ) {}
 
   run(
     key: string,
@@ -45,6 +51,7 @@ export class RequestPool<T> {
           if (entry!.started) return;
           entry!.started = true;
           this.running++;
+          this.onEvent("start", { key, running: this.running, queued: this.queued() });
           void load(controller.signal)
             .then(
               (value) => {
@@ -70,6 +77,11 @@ export class RequestPool<T> {
       this.entries.set(key, entry);
     }
     const current = entry;
+    this.onEvent(current.consumers.size || current.settled ? "join" : "request", {
+      key,
+      speculative,
+      settled: current.settled,
+    });
     const consumer = {};
     current.consumers.add(consumer);
     // Navigation joins/promotes speculative work without waiting for the speculative budget.
@@ -81,6 +93,7 @@ export class RequestPool<T> {
         if (!current.settled && !current.consumers.size) {
           if (this.entries.get(key) === current) this.entries.delete(key);
           current.controller.abort();
+          this.onEvent("cancel", { key, started: current.started });
         }
       };
       const abort = () => {
@@ -100,6 +113,11 @@ export class RequestPool<T> {
         },
       );
     });
+  }
+  private queued() {
+    let queued = 0;
+    for (const entry of this.entries.values()) if (!entry.started) queued++;
+    return queued;
   }
   invalidate() {
     for (const [key, entry] of this.entries) if (entry.settled) this.entries.delete(key);
