@@ -15,11 +15,17 @@ import { authClient } from "./auth-client";
 import { report } from "./notifications";
 import { screenModules } from "./screen-modules";
 import { Toast } from "./components/toast";
+import { ViewerProvider } from "./components/viewer";
 import { track, telemetryEnabled } from "./telemetry";
 
 const commit: ProfilerOnRenderCallback = (id, phase, actual, base) => {
   if (actual >= 8)
-    track("render", id, { phase, ms: Math.round(actual * 10) / 10, base: Math.round(base) });
+    track("render", id, {
+      phase,
+      ms: Math.round(actual * 10) / 10,
+      base: Math.round(base),
+      path: location.pathname,
+    });
 };
 function Profiled({ id, children }: { id: string; children: React.ReactNode }) {
   return telemetryEnabled ? (
@@ -102,34 +108,36 @@ function Root() {
       </main>
     );
   return (
-    <div className="app-shell">
-      <Suspense
-        fallback={
-          <div className="mobile-header">
-            <span className="brand">moviefinder.</span>
-          </div>
-        }
-      >
-        <Profiled id="navigation">
-          <Navigation userId={session.data.user.id} />
-        </Profiled>
-      </Suspense>
-      <main className="app-main" id="main-content">
+    <ViewerProvider userId={session.data.user.id}>
+      <div className="app-shell">
         <Suspense
           fallback={
-            <div className="route-placeholder" aria-label="Opening this page">
-              <div className="skeleton-line wide" />
-              <div className="skeleton-line" />
+            <div className="mobile-header">
+              <span className="brand">moviefinder.</span>
             </div>
           }
         >
-          <Profiled id="screen">
-            <Outlet />
+          <Profiled id="navigation">
+            <Navigation userId={session.data.user.id} />
           </Profiled>
         </Suspense>
-      </main>
-      <Toast />
-    </div>
+        <main className="app-main" id="main-content">
+          <Suspense
+            fallback={
+              <div className="route-placeholder" aria-label="Opening this page">
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+              </div>
+            }
+          >
+            <Profiled id="screen">
+              <Outlet />
+            </Profiled>
+          </Suspense>
+        </main>
+        <Toast />
+      </div>
+    </ViewerProvider>
   );
 }
 function useCurrentUser() {

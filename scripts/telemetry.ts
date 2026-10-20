@@ -67,7 +67,13 @@ const stats = (items: Row[]) => {
 };
 const table = (items: Row[], key: (r: Row) => string, top = 10) =>
   [...group(items, key)]
-    .map(([name, list]) => ({ name, ...stats(list) }))
+    .map(([name, list]) => ({
+      name,
+      ...stats(list),
+      ...(list.some((r) => r.bytes != null)
+        ? { maxKB: Math.round(Math.max(...list.map((r) => num(r.bytes))) / 1024) }
+        : {}),
+    }))
     .sort((a, b) => b.totalMs - a.totalMs)
     .slice(0, top);
 const only = (kind: string, source?: string) =>
@@ -143,6 +149,7 @@ const summary = {
   ),
   merges: table(only("merge"), (r) => r.name),
   longTasks: { ...stats(longTasks), over100: longTasks.filter((r) => num(r.ms) >= 100).length },
+  routes: only("route").map((r) => ({ path: r.name, ms: r.ms })),
   longFrames: only("frame")
     .sort((a, b) => num(b.ms) - num(a.ms))
     .slice(0, 5)
@@ -151,8 +158,21 @@ const summary = {
     .sort((a, b) => num(b.ms) - num(a.ms))
     .slice(0, 5)
     .map((r) => ({ type: r.name, ms: r.ms, target: r.target })),
-  renders: table(only("render"), (r) => `${r.name}:${r.phase}`, 6),
-  routes: only("route").map((r) => ({ path: r.name, ms: r.ms })),
+  renders: table(only("render"), (r) => `${r.name}:${r.phase} ${r.path}`, 8),
+  slowestRenders: only("render")
+    .sort((a, b) => num(b.ms) - num(a.ms))
+    .slice(0, 5)
+    .map((r) => ({ path: r.path, ms: r.ms, base: r.base })),
+  stalls: {
+    ...stats(only("stall")),
+    byPath: table(only("stall"), (r) => String(r.path), 5),
+  },
+  // Peak size per collection over the window; a reload empties them, so the last sample misleads.
+  collections: runtime("client").reduce<Record<string, number>>((peak, row) => {
+    for (const [k, v] of Object.entries(row))
+      if (k.startsWith("n_") && typeof v === "number" && v > (peak[k] ?? 0)) peak[k] = v;
+    return peak;
+  }, {}),
   syncReady: only("sync").map((r) => ({ ms: r.ms, entities: r.entities })),
   browserRuntime: {
     domNodes: lastOf(runtime("client"), "domNodes"),

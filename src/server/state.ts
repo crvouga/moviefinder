@@ -71,8 +71,8 @@ export async function snapshot(db: Database, userId: string) {
     const rows = ids.length
       ? await tx.select().from(s.sources).where(inArray(s.sources.id, ids))
       : [];
-    const { normalize } = await import("./entity-store/normalize");
-    for (const r of rows) entities.push(...normalize(r.id, r.payload, r.version));
+    const { summaryOf } = await import("./entity-store/normalize");
+    for (const r of rows) entities.push(...summaryOf(r.id, r.payload, r.version));
     return { entities, cursor };
   });
 }

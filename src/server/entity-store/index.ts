@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { Database, Transaction } from "../db";
 import { sources } from "../db/schema";
 import { appendEvent } from "../events";
-import { normalize, kindFor, record, sourceDocument } from "./normalize";
+import { normalize, kindFor, record, sourceDocument, summarize } from "./normalize";
 import type { Entity } from "../../shared/contracts";
 export const digest = (v: string) => createHash("sha256").update(v).digest("hex");
 export function createEntityStore(db: Database) {
@@ -91,7 +91,8 @@ export function createEntityStore(db: Database) {
     }
     await tx.insert(sources).values(data).onConflictDoUpdate({ target: sources.id, set: data });
     const entities = normalize(id, payload, version);
-    await appendEvent(tx, `entity:${id}`, entities);
+    // Subscribers need to know the title changed, not to receive its whole relation graph.
+    await appendEvent(tx, `entity:${id}`, entities.filter((e) => e.id === id).map(summarize));
     return entities;
   }
   return { read, ingest };

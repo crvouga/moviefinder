@@ -1,21 +1,31 @@
 import { loadSocial } from "../state";
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Pencil, ArrowUpRight, LogOut, Check, UserPlus, Bookmark } from "lucide-react";
 import { authClient, useEntities, send, report, encodeParams, stopSync } from "../state";
 import type { FeedParams } from "../../shared/contracts";
-import { PageHeading, Empty, TitleCard } from "../components/common";
+import { PageHeading, Empty, TitleCard, ShowMore, usePaging } from "../components/common";
+import { useTitles, useUsers } from "../components/viewer";
 import { ListCard } from "./lists";
 import { Button } from "../components/ui/button";
 import { Sheet } from "../components/ui/dialog";
 export function ActivityPage({ userId }: { userId: string }) {
   const activities = useEntities("activity"),
-    users = useEntities("user"),
+    users = useUsers(),
     lists = useEntities("list"),
-    titles = [...useEntities("movie"), ...useEntities("tv")],
+    titles = useTitles(),
     invitations = useEntities("invitation"),
-    pending = invitations.filter((i) => i.data.userId === userId && i.data.state === "pending");
+    pending = invitations.filter((i) => i.data.userId === userId && i.data.state === "pending"),
+    paging = usePaging("activity", 40),
+    listsById = useMemo(() => new Map(lists.map((l) => [l.id, l])), [lists]),
+    sorted = useMemo(
+      () =>
+        [...activities].sort((a, b) =>
+          fieldText(b.data.createdAt).localeCompare(fieldText(a.data.createdAt)),
+        ),
+      [activities],
+    );
   return (
     <div className="standard-page activity-page">
       <PageHeading eyebrow="A SHARED LOVE OF STORIES" title="In good company." />
@@ -27,10 +37,10 @@ export function ActivityPage({ userId }: { userId: string }) {
               <UserPlus />
               <div>
                 <strong>
-                  {users.find((u) => u.id === inv.data.invitedBy)?.title ?? "A friend"} invited you
-                  to collaborate
+                  {users.get(fieldText(inv.data.invitedBy))?.title ?? "A friend"} invited you to
+                  collaborate
                 </strong>
-                <p>{lists.find((l) => l.id === inv.data.listId)?.title ?? "A shared collection"}</p>
+                <p>{listsById.get(fieldText(inv.data.listId))?.title ?? "A shared collection"}</p>
               </div>
               <Button
                 size="small"
@@ -59,51 +69,49 @@ export function ActivityPage({ userId }: { userId: string }) {
       )}
       {activities.length ? (
         <div className="activity-feed">
-          {[...activities]
-            .sort((a, b) => fieldText(b.data.createdAt).localeCompare(fieldText(a.data.createdAt)))
-            .map((a) => {
-              const u = users.find((u) => u.id === a.data.userId),
-                targetId = fieldText(a.data.targetId),
-                target =
-                  titles.find((t) => t.id === targetId) ?? lists.find((l) => l.id === targetId);
-              return (
-                <article key={a.id}>
-                  <Link
-                    to="/profile/$userId"
-                    params={{ userId: fieldText(a.data.userId) }}
-                    className="avatar"
-                  >
-                    {u?.title[0] ?? "?"}
-                  </Link>
-                  <div>
-                    <p>
-                      <Link to="/profile/$userId" params={{ userId: fieldText(a.data.userId) }}>
-                        <strong>{u?.title ?? "A movie lover"}</strong>
-                      </Link>{" "}
-                      {a.title}
-                    </p>
-                    {target && (
-                      <Link
-                        to={target.kind === "list" ? "/lists/$listId" : "/title/$id"}
-                        params={target.kind === "list" ? { listId: targetId } : { id: targetId }}
-                        className="activity-target"
-                      >
-                        {target.title}
-                        <ArrowUpRight size={14} />
-                      </Link>
-                    )}
-                    <small>
-                      {new Date(fieldText(a.data.createdAt)).toLocaleString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "numeric",
-                        minute: "2-digit",
-                      })}
-                    </small>
-                  </div>
-                </article>
-              );
-            })}
+          {sorted.slice(0, paging.shown).map((a) => {
+            const u = users.get(fieldText(a.data.userId)),
+              targetId = fieldText(a.data.targetId),
+              target = titles.get(targetId) ?? listsById.get(targetId);
+            return (
+              <article key={a.id}>
+                <Link
+                  to="/profile/$userId"
+                  params={{ userId: fieldText(a.data.userId) }}
+                  className="avatar"
+                >
+                  {u?.title[0] ?? "?"}
+                </Link>
+                <div>
+                  <p>
+                    <Link to="/profile/$userId" params={{ userId: fieldText(a.data.userId) }}>
+                      <strong>{u?.title ?? "A movie lover"}</strong>
+                    </Link>{" "}
+                    {a.title}
+                  </p>
+                  {target && (
+                    <Link
+                      to={target.kind === "list" ? "/lists/$listId" : "/title/$id"}
+                      params={target.kind === "list" ? { listId: targetId } : { id: targetId }}
+                      className="activity-target"
+                    >
+                      {target.title}
+                      <ArrowUpRight size={14} />
+                    </Link>
+                  )}
+                  <small>
+                    {new Date(fieldText(a.data.createdAt)).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
+                  </small>
+                </div>
+              </article>
+            );
+          })}
+          <ShowMore total={sorted.length} paging={paging} />
         </div>
       ) : (
         <Empty title="The conversation starts with you.">
@@ -118,22 +126,21 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
   const params = useParams({ strict: false }) as { userId?: string },
     userId = params.userId ?? currentUserId,
     own = userId === currentUserId,
-    users = useEntities("user"),
+    users = useUsers(),
     statuses = useEntities("status"),
     lists = useEntities("list"),
-    movies = useEntities("movie"),
-    tv = useEntities("tv"),
+    byId = useTitles(),
     feeds = useEntities("feed"),
     follows = useEntities("follow"),
     [edit, setEdit] = useState(false),
     [tab, setTab] = useState("liked");
-  const user = users.find((u) => u.id === userId),
+  const user = users.get(userId),
     tags = statuses.filter((s) => s.data.userId === userId),
-    byId = new Map([...movies, ...tv].map((e) => [e.id, e])),
     titles = tags
       .filter((s) => (tab === "seen" ? s.data.seen : s.data.sentiment === tab))
       .map((s) => byId.get(fieldText(s.data.titleId)))
       .filter((e) => !!e),
+    paging = usePaging(`${userId}|${tab}`),
     ownedLists = lists.filter((l) => l.data.ownerId === userId),
     followed = follows.some((f) => f.data.targetId === userId);
   const queryRows = useEntities("query"),
@@ -236,7 +243,7 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
         </div>
       ) : titles.length ? (
         <div className="title-grid">
-          {titles.map((e) => (
+          {titles.slice(0, paging.shown).map((e) => (
             <TitleCard key={e.id} entity={e} />
           ))}
         </div>
@@ -245,6 +252,7 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
           A few taps in Discover and this space starts telling your story.
         </Empty>
       )}
+      <ShowMore total={titles.length} paging={paging} />
       {nextPage && (
         <Button
           variant="outline"

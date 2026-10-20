@@ -1,6 +1,6 @@
 import { feedParams } from "../../shared/contracts";
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import {
   Plus,
@@ -22,16 +22,13 @@ import {
 import type { Entity } from "../../shared/contracts";
 import { useEntities, send, report, notify, discover, subscribeQuery, loadSocial } from "../state";
 import { Poster, PageHeading, Empty } from "../components/common";
+import { useListItems, useTitles, useUsers, useViewerStatuses } from "../components/viewer";
 import { Button } from "../components/ui/button";
 import { Sheet } from "../components/ui/dialog";
-export function ListCard({ list }: { list: Entity }) {
-  const items = useEntities("item"),
-    movies = useEntities("movie"),
-    tv = useEntities("tv"),
-    users = useEntities("user");
-  const entries = items.filter((i) => i.data.listId === list.id).sort(compareOrder),
-    byId = new Map([...movies, ...tv].map((e) => [e.id, e])),
-    owner = users.find((u) => u.id === list.data.ownerId);
+export const ListCard = memo(function ListCard({ list }: { list: Entity }) {
+  const entries = useListItems(list.id),
+    byId = useTitles(),
+    owner = useUsers().get(fieldText(list.data.ownerId));
   return (
     <Link to="/lists/$listId" params={{ listId: list.id }} className="list-card">
       <div className="list-art">
@@ -61,7 +58,7 @@ export function ListCard({ list }: { list: Entity }) {
       </p>
     </Link>
   );
-}
+});
 export function ListsPage({ userId }: { userId: string }) {
   const lists = useEntities("list"),
     members = useEntities("collaborator"),
@@ -137,11 +134,6 @@ export function ListsPage({ userId }: { userId: string }) {
     </div>
   );
 }
-function compareOrder(a: Entity, b: Entity) {
-  const x = fieldText(a.data.orderKey),
-    y = fieldText(b.data.orderKey);
-  return x < y ? -1 : x > y ? 1 : a.id.localeCompare(b.id);
-}
 function ListEditor({
   open,
   setOpen,
@@ -213,14 +205,13 @@ export function ListDetail({ userId }: { userId: string }) {
   const { listId } = useParams({ strict: false }) as { listId: string },
     router = useRouter(),
     lists = useEntities("list"),
-    allItems = useEntities("item"),
-    statuses = useEntities("status"),
+    entries = useListItems(listId),
+    statuses = useViewerStatuses(),
+    byId = useTitles(),
     invitations = useEntities("invitation"),
     members = useEntities("collaborator"),
     users = useEntities("user"),
     follows = useEntities("follow"),
-    movies = useEntities("movie"),
-    tv = useEntities("tv"),
     activities = useEntities("activity"),
     [search, setSearch] = useState(""),
     [edit, setEdit] = useState(false),
@@ -244,8 +235,6 @@ export function ListDetail({ userId }: { userId: string }) {
     role = members.find((m) => m.data.listId === listId && m.data.userId === userId)?.data.role,
     editable = role === "owner" || role === "editor",
     owner = role === "owner",
-    byId = new Map([...movies, ...tv].map((e) => [e.id, e])),
-    entries = allItems.filter((i) => i.data.listId === listId).sort(compareOrder),
     filtered = entries.filter(
       (i) =>
         !search ||
@@ -387,28 +376,18 @@ export function ListDetail({ userId }: { userId: string }) {
                           {e?.year ?? "—"} · {e?.kind === "tv" ? "TV series" : "Film"}
                         </p>
                         <span className="entry-tags">
-                          {statuses.find(
-                            (s) => s.data.userId === userId && s.data.titleId === e?.id,
-                          )?.data.seen === true && (
+                          {statuses.get(entry.data.titleId as string)?.seen === true && (
                             <span>
                               <Eye size={10} />
                               Seen
                             </span>
                           )}
                           {["liked", "meh", "disliked"].includes(
-                            fieldText(
-                              statuses.find(
-                                (s) => s.data.userId === userId && s.data.titleId === e?.id,
-                              )?.data.sentiment,
-                            ),
+                            fieldText(statuses.get(entry.data.titleId as string)?.sentiment),
                           ) && (
                             <span>
                               <Heart size={10} />
-                              {fieldText(
-                                statuses.find(
-                                  (s) => s.data.userId === userId && s.data.titleId === e?.id,
-                                )?.data.sentiment,
-                              )}
+                              {fieldText(statuses.get(entry.data.titleId as string)?.sentiment)}
                             </span>
                           )}
                         </span>

@@ -2936,3 +2936,8 @@ small {
   margin: 20px 0;
   object-fit: contain;
 }
+
+.show-more {
+  margin: 1.25rem auto 0;
+  display: flex;
+}

@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Database } from "../db";
 import { sources, queryCache, statuses, items } from "../db/schema";
 import { digest } from "../entity-store";
-import { normalize as normalizeSource } from "../entity-store/normalize";
+import { normalize as normalizeSource, summaryOf } from "../entity-store/normalize";
 import type { Sync } from "../entity-store-sync";
 import {
   feedParams,
@@ -229,7 +229,14 @@ export function createQueries(db: Database, sync: Sync) {
           );
         return {
           id: cache.id,
-          entities: [...byId.values(), ...cache.tags.map((row) => rowEntity("status", row))],
+          // Feeds carry each title once, as a summary; the detail view loads the rest.
+          entities: [
+            ...cache.ids.flatMap((id) => {
+              const r = cache.records.find((x) => x.id === id);
+              return r ? summaryOf(r.id, r.payload, r.version) : [];
+            }),
+            ...cache.tags.map((row) => rowEntity("status", row)),
+          ],
           ids: visible.map((e) => e.id),
           coverage,
         };

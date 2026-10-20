@@ -1,5 +1,5 @@
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Film,
@@ -14,9 +14,10 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 import type { Entity } from "../../shared/contracts";
-import { useEntities, send, report, authClient } from "../state";
+import { useEntities, send, report } from "../state";
 import { Button } from "./ui/button";
 import { Sheet } from "./ui/dialog";
+import { useViewerStatus } from "./viewer";
 export const imageUrl = (path: string | null | undefined, size = "w500") =>
   path
     ? path.startsWith("https://")
@@ -61,17 +62,15 @@ export function Poster({
     </div>
   );
 }
-export function TitleCard({ entity }: { entity: Entity }) {
-  const userId = authClient.useSession().data?.user.id,
-    statuses = useEntities("status"),
-    status = statuses.find((s) => s.data.userId === userId && s.data.titleId === entity.id);
+export const TitleCard = memo(function TitleCard({ entity }: { entity: Entity }) {
+  const status = useViewerStatus(entity.id);
   return (
     <Link to="/title/$id" params={{ id: entity.id }} className="title-card">
       <Poster entity={entity} />
-      {(status?.data.seen || status?.data.sentiment === "liked") && (
+      {(status?.seen || status?.sentiment === "liked") && (
         <span className="card-status">
-          {status?.data.seen === true && <Eye size={12} aria-label="Seen" />}
-          {status?.data.sentiment === "liked" && <Heart size={12} aria-label="Liked" />}
+          {status?.seen === true && <Eye size={12} aria-label="Seen" />}
+          {status?.sentiment === "liked" && <Heart size={12} aria-label="Liked" />}
         </span>
       )}
       <h3>{entity.title}</h3>
@@ -87,6 +86,25 @@ export function TitleCard({ entity }: { entity: Entity }) {
       </p>
     </Link>
   );
+});
+// Hundreds of cards cost far more than they help. Reveal a page at a time; `key` restarts it.
+export function usePaging(key: string, size = 48) {
+  const [state, set] = useState({ key, shown: size });
+  const shown = state.key === key ? state.shown : size;
+  return { shown, more: () => set({ key, shown: shown + size }) };
+}
+export function ShowMore({
+  total,
+  paging,
+}: {
+  total: number;
+  paging: ReturnType<typeof usePaging>;
+}) {
+  return total > paging.shown ? (
+    <Button variant="outline" className="show-more" onClick={paging.more}>
+      Show more ({total - paging.shown} more)
+    </Button>
+  ) : null;
 }
 export function Empty({
   title,
@@ -114,10 +132,9 @@ export function Tags({
   userId: string;
   compact?: boolean;
 }) {
-  const statuses = useEntities("status"),
-    status = statuses.find((s) => s.data.userId === userId && s.data.titleId === entity.id),
+  const status = useViewerStatus(entity.id),
     [add, setAdd] = useState(false);
-  const selected = fieldText(status?.data.sentiment ?? "unrated");
+  const selected = fieldText(status?.sentiment ?? "unrated");
   const toggle = (value: "liked" | "meh" | "disliked") =>
     void send(
       { type: "status", titleId: entity.id, sentiment: selected === value ? "unrated" : value },
@@ -128,13 +145,12 @@ export function Tags({
       <div className={`tag-controls ${compact ? "compact" : ""}`}>
         <button
           aria-label="Mark as seen"
-          aria-pressed={!!status?.data.seen}
-          className={status?.data.seen ? "selected" : ""}
+          aria-pressed={!!status?.seen}
+          className={status?.seen ? "selected" : ""}
           onClick={() =>
-            void send(
-              { type: "status", titleId: entity.id, seen: !status?.data.seen },
-              userId,
-            ).catch(report)
+            void send({ type: "status", titleId: entity.id, seen: !status?.seen }, userId).catch(
+              report,
+            )
           }
         >
           <Eye />
@@ -187,12 +203,6 @@ export function AddToList({
   open: boolean;
   setOpen: (v: boolean) => void;
 }) {
-  const lists = useEntities("list"),
-    members = useEntities("collaborator"),
-    items = useEntities("item");
-  const editable = lists.filter((l) =>
-    members.some((m) => m.data.listId === l.id && m.data.userId === userId),
-  );
   return (
     <Sheet
       open={open}
@@ -200,52 +210,70 @@ export function AddToList({
       title="Save for a good night"
       description={entity.title}
     >
-      <div className="sheet-body list-picker">
-        {editable.map((list) => {
-          const exists = items.some(
-            (i) => i.data.listId === list.id && i.data.titleId === entity.id,
-          );
-          return (
-            <button
-              key={list.id}
-              disabled={exists}
-              onClick={() =>
-                void send({ type: "list.add", listId: list.id, titleId: entity.id }, userId)
-                  .then(() => setOpen(false))
-                  .catch(report)
-              }
-            >
-              <span className="list-icon">
-                <Bookmark />
-              </span>
-              <span>
-                {list.title}
-                <small>{items.filter((i) => i.data.listId === list.id).length} titles</small>
-              </span>
-              {exists ? <Check /> : <Plus />}
-            </button>
-          );
-        })}
-        <Button
-          variant="outline"
-          onClick={() => {
-            const title = window.prompt("Name your new list");
-            if (title)
-              void send({ type: "list.create", title, description: "" }, userId)
-                .then(async (result) => {
-                  const list = result.entities.find((e) => e.kind === "list");
-                  if (list)
-                    await send({ type: "list.add", listId: list.id, titleId: entity.id }, userId);
-                  setOpen(false);
-                })
-                .catch(report);
-          }}
-        >
-          <Plus size={16} />
-          Create a list
-        </Button>
-      </div>
+      <ListPicker entity={entity} userId={userId} setOpen={setOpen} />
     </Sheet>
+  );
+}
+// Mounted only while the sheet is open, so closed cards hold no live queries.
+function ListPicker({
+  entity,
+  userId,
+  setOpen,
+}: {
+  entity: Entity;
+  userId: string;
+  setOpen: (v: boolean) => void;
+}) {
+  const lists = useEntities("list"),
+    members = useEntities("collaborator"),
+    items = useEntities("item");
+  const editable = lists.filter((l) =>
+    members.some((m) => m.data.listId === l.id && m.data.userId === userId),
+  );
+  return (
+    <div className="sheet-body list-picker">
+      {editable.map((list) => {
+        const exists = items.some((i) => i.data.listId === list.id && i.data.titleId === entity.id);
+        return (
+          <button
+            key={list.id}
+            disabled={exists}
+            onClick={() =>
+              void send({ type: "list.add", listId: list.id, titleId: entity.id }, userId)
+                .then(() => setOpen(false))
+                .catch(report)
+            }
+          >
+            <span className="list-icon">
+              <Bookmark />
+            </span>
+            <span>
+              {list.title}
+              <small>{items.filter((i) => i.data.listId === list.id).length} titles</small>
+            </span>
+            {exists ? <Check /> : <Plus />}
+          </button>
+        );
+      })}
+      <Button
+        variant="outline"
+        onClick={() => {
+          const title = window.prompt("Name your new list");
+          if (title)
+            void send({ type: "list.create", title, description: "" }, userId)
+              .then(async (result) => {
+                const list = result.entities.find((e) => e.kind === "list");
+                if (list)
+                  await send({ type: "list.add", listId: list.id, titleId: entity.id }, userId);
+                setOpen(false);
+              })
+              .catch(report);
+        }}
+      >
+        <Plus size={16} />
+        Create a list
+      </Button>
+    </div>
   );
 }
 export function PageHeading({

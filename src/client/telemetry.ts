@@ -12,6 +12,11 @@ const page = crypto.randomUUID().slice(0, 8);
 const nativeFetch = telemetryEnabled ? window.fetch.bind(window) : undefined;
 const round = (value: number) => Math.round(value * 10) / 10;
 
+const gauges: (() => Fields)[] = [];
+// Samplers for state owned elsewhere, e.g. collection sizes. Read every few seconds.
+export function gauge(read: () => Fields) {
+  if (telemetryEnabled) gauges.push(read);
+}
 export function track(kind: string, name: string, fields: Fields = {}) {
   if (!telemetryEnabled) return;
   const event: Event = { t: new Date().toISOString(), kind, name, page, ...fields };
@@ -160,12 +165,23 @@ export function installTelemetry() {
   const sample = () => {
     const memory = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
     track("runtime", "sample", {
+      ...Object.assign({}, ...gauges.map((read) => read())),
       domNodes: document.getElementsByTagName("*").length,
       heapMb: memory ? Math.round(memory.usedJSHeapSize / 1048576) : undefined,
       path: location.pathname,
     });
   };
   setInterval(sample, 5000);
+  // Long-task entries are missing in WebKit/Firefox, so detect main-thread stalls by timer lateness.
+  let tick = performance.now();
+  setInterval(() => {
+    const now = performance.now(),
+      late = now - tick - 50;
+    tick = now;
+    if (late >= 100 && !document.hidden)
+      track("stall", "main", { ms: round(late), path: location.pathname });
+  }, 50);
+  document.addEventListener("visibilitychange", () => (tick = performance.now()));
   setInterval(() => flush(), 1500);
   addEventListener("pagehide", () => flush(true));
   document.addEventListener("visibilitychange", () => document.hidden && flush(true));

@@ -1,6 +1,6 @@
 import { RequestPool } from "./request-pool";
 import { createOutbox } from "./outbox";
-import { track, measure, span, count } from "./telemetry";
+import { track, measure, span, count, gauge } from "./telemetry";
 const outbox = createOutbox(window.localStorage);
 const itemAliases = new Map<string, string>();
 import { fieldText } from "../shared/contracts";
@@ -85,6 +85,7 @@ function makeCollection(kind: Kind) {
 export const collections = Object.fromEntries(
   kinds.map((kind) => [kind, makeCollection(kind)]),
 ) as Record<Kind, ReturnType<typeof makeCollection>>;
+gauge(() => Object.fromEntries(kinds.map((kind) => [`n_${kind}`, collections[kind].size])));
 const versions = new Map<string, number>();
 let loaded: Promise<unknown> | undefined;
 const collectionsReady = () =>
@@ -98,12 +99,24 @@ function applyMerge(entities: Entity[]) {
   const groups = new Map<Kind, Entity[]>();
   for (const e of entities) {
     const key = `${e.kind}:${e.id}`;
-    const known = versions.get(key) ?? -1;
-    // Re-delivery of a version already in the collection would only wake every live query.
-    if (e.version < known || (e.version === known && collections[e.kind].has(e.id))) continue;
+    const known = versions.get(key) ?? -1,
+      held = collections[e.kind].get(e.id),
+      summary = e.data.summary === true;
+    if (e.version < known) continue;
+    // A summary (feeds, snapshot, events) never repeats a version the collection already has and
+    // never discards relations loaded by the detail view. Detail entities always apply.
+    if (summary && held && e.version === known) continue;
     versions.set(key, e.version);
+    const next =
+      summary && held
+        ? {
+            ...e,
+            related: held.related,
+            data: { ...held.data, ...e.data, summary: held.data.summary },
+          }
+        : e;
     const group = groups.get(e.kind) ?? [];
-    group.push(e);
+    group.push(next);
     groups.set(e.kind, group);
   }
   const writes: Promise<void>[] = [];
@@ -175,7 +188,8 @@ let eventBatch: string[] = [],
 let source: EventSource | undefined,
   started = false,
   eventQueue = Promise.resolve();
-const subscriptions = new Map<string, { params: FeedParams; users: number }>();
+// Live interest in a server subscription (a feed page or a title); events for it re-read it.
+const subscriptions = new Map<string, { reload: () => Promise<unknown>; users: number }>();
 export function encodeParams(p: FeedParams): Record<string, string> {
   return Object.fromEntries(
     Object.entries(p)
@@ -233,13 +247,16 @@ function refetchSoon(id: string) {
     setTimeout(() => {
       refetches.delete(id);
       const sub = subscriptions.get(id);
-      if (sub) void discover(sub.params).catch(report);
+      if (!sub) return;
+      // The response that raised this event may have settled after it; never reuse that one.
+      requests.invalidate();
+      void sub.reload().catch(report);
     }, 300),
   );
 }
 export function subscribeQuery(id: string, params: FeedParams) {
   const current = subscriptions.get(id);
-  subscriptions.set(id, { params, users: (current?.users ?? 0) + 1 });
+  subscriptions.set(id, { reload: () => discover(params), users: (current?.users ?? 0) + 1 });
   const metadata = collections.query.get(id);
   if ((metadata?.data.coverage as { state?: string } | undefined)?.state !== "complete")
     void discover(params).catch(report);
@@ -247,6 +264,18 @@ export function subscribeQuery(id: string, params: FeedParams) {
     const sub = subscriptions.get(id);
     if (sub && sub.users > 1) sub.users--;
     else subscriptions.delete(id);
+  };
+}
+// Hydration completes after the first response, and events carry only summaries, so a title on
+// screen re-reads itself when its subscription changes.
+export function subscribeEntity(id: string) {
+  const key = `entity:${id}`,
+    current = subscriptions.get(key);
+  subscriptions.set(key, { reload: () => loadEntity(id), users: (current?.users ?? 0) + 1 });
+  return () => {
+    const sub = subscriptions.get(key);
+    if (sub && sub.users > 1) sub.users--;
+    else subscriptions.delete(key);
   };
 }
 export function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
@@ -289,8 +318,8 @@ export async function startSync(userId: string) {
         .filter((c) => c.utils.isError)
         .map((c) => c.utils.refetch({ throwOnError: true })),
     );
-    await Promise.all(Object.values(collections).map((c) => c.preload()));
     const state = await loadSnapshot();
+    await span("sync", "preload", () => collectionsReady(), { entities: state.entities.length });
     if (epoch !== syncEpoch) return;
     syncFailures = 0;
     track("sync", "ready", {

@@ -1,8 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { ArrowLeft, Star, Play, ArrowUpRight, Calendar, Clock } from "lucide-react";
-import { useEntity, useEntities, loadEntity, report } from "../state";
-import { Poster, Tags, TitleCard, External, imageUrl } from "../components/common";
+import { useEntity, useEntities, loadEntity, subscribeEntity, report } from "../state";
+import {
+  Poster,
+  Tags,
+  TitleCard,
+  External,
+  ShowMore,
+  usePaging,
+  imageUrl,
+} from "../components/common";
 import { Button } from "../components/ui/button";
 import type { Entity } from "../../shared/contracts";
 const text = (value: unknown) =>
@@ -15,6 +23,7 @@ const ids = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 export function DetailPage({ userId }: { userId: string }) {
   const [filmographyTab, setFilmographyTab] = useState("all");
+
   const { id } = useParams({ strict: false }) as { id: string },
     entity = useEntity(id),
     router = useRouter(),
@@ -30,8 +39,31 @@ export function DetailPage({ userId }: { userId: string }) {
     void loadEntity(id, c.signal).catch((error) => {
       if (!c.signal.aborted) report(error);
     });
-    return () => c.abort();
+    const unsubscribe = subscribeEntity(id);
+    return () => {
+      c.abort();
+      unsubscribe();
+    };
   }, [id]);
+  // Index each collection once per change; the page reads these by id many times per render.
+  const byId = useMemo(
+      () =>
+        new Map([...people, ...movies, ...series, ...seasons, ...episodes].map((e) => [e.id, e])),
+      [people, movies, series, seasons, episodes],
+    ),
+    creditsById = useMemo(() => new Map(credits.map((c) => [c.id, c])), [credits]),
+    genreTitles = useMemo(() => new Map(genres.map((g) => [g.id, g.title])), [genres]);
+  // Department per filmography title, so each tab filters in one pass.
+  const departments = useMemo(() => {
+    const own = new Set(ids(entity?.data.filmographyCredits)),
+      map = new Map<string, Set<string>>();
+    for (const c of credits)
+      if (own.has(c.id)) {
+        const title = text(c.data.titleId);
+        map.set(title, (map.get(title) ?? new Set()).add(text(c.data.department)));
+      }
+    return map;
+  }, [credits, entity?.data.filmographyCredits]);
   if (!entity)
     return (
       <div className="detail-page">
@@ -51,11 +83,9 @@ export function DetailPage({ userId }: { userId: string }) {
         </div>
       </div>
     );
-  const byId = new Map(
-      [...people, ...movies, ...series, ...seasons, ...episodes].map((e) => [e.id, e]),
-    ),
-    cast = ((entity.data.credits as string[]) ?? [])
-      .map((cid) => credits.find((c) => c.id === cid))
+  const person = entity.kind === "person";
+  const cast = ((entity.data.credits as string[]) ?? [])
+      .map((cid) => creditsById.get(cid))
       .filter((c): c is Entity => !!c),
     relations = (entity.data.relations as Record<string, string[]>) ?? {},
     related = [
@@ -67,8 +97,18 @@ export function DetailPage({ userId }: { userId: string }) {
       ]),
     ]
       .map((i) => byId.get(i))
-      .filter((e): e is Entity => !!e),
-    person = entity.kind === "person";
+      .filter((e): e is Entity => !!e);
+  const paging = usePaging(`${id}|${filmographyTab}`, 24);
+  const visibleRelated = related.filter(
+    (e) =>
+      !person ||
+      filmographyTab === "all" ||
+      [...(departments.get(e.id) ?? [])].some((d) =>
+        filmographyTab === "other"
+          ? !["Acting", "Directing", "Writing"].includes(d)
+          : d === filmographyTab,
+      ),
+  );
   return (
     <div className="detail-page">
       {entity.backdrop && (
@@ -142,7 +182,7 @@ export function DetailPage({ userId }: { userId: string }) {
           <div className="detail-genres">
             {entity.genres?.map((g) => (
               <Link key={g} to="/" search={{ genres: g.split(":").at(-1) }} className="chip">
-                {genres.find((e) => e.id === g)?.title ?? "Explore genre"}
+                {genreTitles.get(g) ?? "Explore genre"}
               </Link>
             ))}
           </div>
@@ -218,7 +258,7 @@ export function DetailPage({ userId }: { userId: string }) {
           </div>
           <div className="cast-row">
             {cast.map((credit) => {
-              const p = people.find((p) => p.id === credit.data.personId);
+              const p = byId.get(text(credit.data.personId));
               return p ? (
                 <Link key={credit.id} to="/title/$id" params={{ id: p.id }} className="person-card">
                   <Poster entity={p} />
@@ -235,7 +275,7 @@ export function DetailPage({ userId }: { userId: string }) {
           <h2>Stay for another season.</h2>
           <div className="season-grid">
             {ids(entity.data.seasons).map((sid) => {
-              const s = seasons.find((s) => s.id === sid);
+              const s = byId.get(sid);
               return (
                 <Link key={sid} to="/title/$id" params={{ id: sid }} className="season-card">
                   <Poster entity={s} />
@@ -255,7 +295,7 @@ export function DetailPage({ userId }: { userId: string }) {
           <h2>One more episode.</h2>
           <div className="episode-list">
             {ids(entity.data.episodes).map((eid) => {
-              const e = episodes.find((e) => e.id === eid);
+              const e = byId.get(eid);
               return (
                 <Link key={eid} to="/title/$id" params={{ id: eid }}>
                   <span className="episode-number">
@@ -375,24 +415,11 @@ export function DetailPage({ userId }: { userId: string }) {
             </div>
           )}
           <div className="title-grid">
-            {related
-              .filter(
-                (e) =>
-                  !person ||
-                  filmographyTab === "all" ||
-                  credits.some(
-                    (c) =>
-                      ids(entity.data.filmographyCredits).includes(c.id) &&
-                      c.data.titleId === e.id &&
-                      (filmographyTab === "other"
-                        ? !["Acting", "Directing", "Writing"].includes(text(c.data.department))
-                        : c.data.department === filmographyTab),
-                  ),
-              )
-              .map((e) => (
-                <TitleCard key={e.id} entity={e} />
-              ))}
+            {visibleRelated.slice(0, paging.shown).map((e) => (
+              <TitleCard key={e.id} entity={e} />
+            ))}
           </div>
+          <ShowMore total={visibleRelated.length} paging={paging} />
         </section>
       )}
       <p className="tmdb-credit">

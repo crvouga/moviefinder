@@ -20,11 +20,14 @@ bun run telemetry slow --min 50        # slowest events first
 bun run telemetry clear                # start a clean measurement
 ```
 
-The summary covers server HTTP latency and size per route, database statements (slowest and most
+The summary covers server HTTP latency and response size per route (`maxKB`; a multi-megabyte
+response is the first thing to look for when a screen is slow), database statements (slowest and most
 repeated), TMDB requests, snapshot size, event-loop lag, SSE traffic, browser fetches (including
 aborted ones), the request pool (requests, joins, cancellations), preload activity, collection
 merge cost, long tasks and long animation frames with the responsible script, slow interactions,
-React commit time per screen, route transitions, DOM size and heap, and uncaught errors.
+React commit time per screen and path, main-thread stalls by path (timer lateness, so it works in
+WebKit and Firefox, which lack long-task entries), route transitions, peak collection sizes
+(`n_<kind>`), DOM size and heap, and uncaught errors.
 
 In a page opened with `bun run dev`, `window.__moviefinderTelemetry` exposes `events`, `counts`,
 `summary()` and `flush()` for a browser-driving agent. `counts["render.useEntities.<kind>"]` shows
@@ -35,12 +38,16 @@ how often each collection hook ran.
 ```sh
 bun run perf                 # 2000 synthetic titles, 4x CPU throttle
 bun run perf --throttle 1    # no throttle
+bun run perf --seed 2000 --lists 20   # a larger, longer-used account
+bun run perf --profile                 # adds a CPU profile: self time per function
 bun run perf --titles 5000 --json
 ```
 
-`bun run perf` creates an isolated embedded PostgreSQL, serves a synthetic catalog 20 titles per
-page with provider latency, runs the real Vite client in headless Chromium, registers, scrolls 30
-slides, tags, opens a title, visits lists and search, then prints the telemetry summary. Compare
+`bun run perf` creates an isolated embedded PostgreSQL with cached titles, serves a synthetic
+catalog 20 titles per page with provider latency (including series with thousands of credits and
+people with hundreds), runs the real Vite client in headless Chromium, registers, scrolls 30
+slides, tags, browses people and series without reloading so the collections keep growing, fills
+lists and tags, visits every screen, then prints the telemetry summary. Compare
 `longTasks`, `renders`, `requestPool` and `clientFetch` before and after a change. It makes no
 network requests and never touches the local development database.
 

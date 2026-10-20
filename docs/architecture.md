@@ -25,6 +25,8 @@ TanStack Router owns deep links and navigation. Authentication restoration gates
 
 Commands create TanStack DB optimistic transactions, enter a per-resource request lane, and merge the authoritative response before optimistic overlays settle. A failed command rolls back its overlay and displays a non-blocking message. A transport retry reuses the operation ID.
 
+List-shaped responses (feeds, the bootstrap snapshot, saved lists and SSE events) carry titles as summaries: scalar fields only, marked `data.summary`. Relations, credits and other collections arrive with the detail view, whose graph is bounded (100 cast, 40 crew, 30 guests, 300 filmography entries); the source JSON keeps everything. A summary never replaces relations the client already holds, and a screen showing a title re-reads it when its subscription changes. Without this, one long-running series put 16,000 entities (4 MB) into every feed response and froze the interface for seconds.
+
 Discovery mounts only neighboring virtual slides. Poster dimensions are reserved, responsive resolutions are used, and at most two upcoming posters are explicitly prefetched after the feed rests. Feed positions are transient session UI state. Detail and social pages are code-split.
 
 ## Operational scope

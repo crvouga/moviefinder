@@ -7,18 +7,46 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { openLocalDatabase, migrateLocalDatabase } from "./local-database";
 import { createDatabase } from "../src/server/db";
 import { createApplication } from "../src/server/app";
+import { createEntityStore } from "../src/server/entity-store";
 import { readConfig } from "../src/server/config";
 import { configureTelemetry, stopTelemetry } from "../src/server/telemetry";
 import { fixtureUpstream, movieDetail } from "../tests/fixtures/catalog";
 
 // Reproducible performance run: isolated embedded PostgreSQL, a synthetic catalog, the real
 // Vite dev client, and a scripted browser session. Prints the telemetry summary afterwards.
-//   bun run perf [--titles 2000] [--throttle 4] [--headed] [--keep]
+//   bun run perf [--titles 2000] [--seed 600] [--lists 12] [--throttle 4] [--headed] [--keep]
 const args = process.argv.slice(2);
 const option = (name: string, fallback: number) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? Number(args[i + 1]) : fallback;
 };
+type CpuProfile = {
+  nodes: {
+    id: number;
+    callFrame: { functionName: string; url: string; lineNumber: number };
+  }[];
+  samples: number[];
+  timeDeltas: number[];
+};
+// Self time per function, so the cost is attributed to code rather than to a frame.
+function printProfile(profile: CpuProfile) {
+  const nodes = new Map(profile.nodes.map((node) => [node.id, node.callFrame]));
+  const self = new Map<string, number>();
+  let total = 0;
+  profile.samples.forEach((id, i) => {
+    const frame = nodes.get(id)!;
+    const delta = (profile.timeDeltas[i] ?? 0) / 1000;
+    if (frame.functionName === "(idle)") return;
+    total += delta;
+    const name = `${frame.functionName || "(anonymous)"} ${frame.url.replace(/^.*\/(?=src\/|node_modules\/)/, "").replace(/\?.*$/, "")}:${frame.lineNumber + 1}`;
+    self.set(name, (self.get(name) ?? 0) + delta);
+  });
+  console.log(`\n## cpuProfile (self time, ${Math.round(total)} ms busy; ${throttle}x throttle)`);
+  for (const [name, ms] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 25))
+    console.log(`${String(Math.round(ms)).padStart(7)} ms  ${name}`);
+}
+const seeded = option("seed", 600),
+  listCount = option("lists", 12);
 const titles = option("titles", 2000),
   throttle = option("throttle", 4);
 const directory = await mkdtemp(join(tmpdir(), "moviefinder-perf-"));
@@ -61,6 +89,14 @@ try {
     vote_count: 1000,
     original_language: "en",
   });
+  // A database that has been used for a while already holds many cached titles.
+  const store = createEntityStore(db);
+  await db.transaction(async (tx) => {
+    for (let i = 1; i <= seeded; i++) {
+      await store.ingest(tx, `tmdb:movie:${i}`, synthetic("movie", i));
+      if (i % 4 === 0) await store.ingest(tx, `tmdb:tv:${i}`, synthetic("tv", i));
+    }
+  });
   // A catalog of `titles` entries served 20 per page with realistic provider latency.
   const upstream = async (path: string, params: Record<string, string> = {}) => {
     await Bun.sleep(60);
@@ -74,8 +110,81 @@ try {
       };
     }
     const id = Number(path.split("/")[1]);
-    if ((path.startsWith("movie/") || path.startsWith("tv/")) && id)
-      return { ...fixtureDetail(type), ...synthetic(path.startsWith("tv/") ? "tv" : "movie", id) };
+    // Long-running series and prolific people are what make detail pages heavy.
+    if (path.startsWith("tv/") && path.includes("/season/")) {
+      const season = Number(path.split("/").at(-1));
+      return {
+        id: id * 100 + season,
+        name: `Season ${season}`,
+        season_number: season,
+        episodes: Array.from({ length: 22 }, (_, n) => ({
+          id: id * 10000 + season * 100 + n,
+          name: `Episode ${n + 1}`,
+          episode_number: n + 1,
+          air_date: "2010-01-01",
+          overview: "An episode used to measure interface performance.",
+        })),
+      };
+    }
+    if (path.startsWith("person/") && id)
+      return {
+        id,
+        name: `Synthetic person ${id}`,
+        biography: "A prolific performer. ".repeat(20),
+        known_for_department: "Acting",
+        combined_credits: {
+          cast: Array.from({ length: 300 }, (_, n) => {
+            const target = ((id * 7 + n) % titles) + 1;
+            return {
+              ...synthetic(n % 4 === 0 ? "tv" : "movie", target),
+              media_type: n % 4 === 0 ? "tv" : "movie",
+              credit_id: `credit-${id}-${n}`,
+              character: `Role ${n}`,
+            };
+          }),
+          crew: Array.from({ length: 40 }, (_, n) => ({
+            ...synthetic("movie", ((id * 11 + n) % titles) + 1),
+            media_type: "movie",
+            credit_id: `crew-${id}-${n}`,
+            job: n % 2 ? "Director" : "Writer",
+            department: n % 2 ? "Directing" : "Writing",
+          })),
+        },
+      };
+    if ((path.startsWith("movie/") || path.startsWith("tv/")) && id) {
+      const tv = path.startsWith("tv/");
+      return {
+        ...fixtureDetail(type),
+        ...synthetic(tv ? "tv" : "movie", id),
+        credits: {
+          cast: Array.from({ length: 60 }, (_, n) => ({
+            id: 1000 + ((id * 13 + n) % 400),
+            name: `Synthetic person ${1000 + ((id * 13 + n) % 400)}`,
+            character: `Role ${n}`,
+            credit_id: `cast-${id}-${n}`,
+            profile_path: `/synthetic-person-${n}.jpg`,
+          })),
+          crew: [],
+        },
+        recommendations: {
+          results: Array.from({ length: 20 }, (_, n) => ({
+            ...synthetic(tv ? "tv" : "movie", ((id + n * 37) % titles) + 1),
+            media_type: tv ? "tv" : "movie",
+          })),
+        },
+        ...(tv
+          ? {
+              number_of_seasons: 10,
+              number_of_episodes: 220,
+              seasons: Array.from({ length: 10 }, (_, n) => ({
+                id: id * 100 + n + 1,
+                name: `Season ${n + 1}`,
+                season_number: n + 1,
+              })),
+            }
+          : {}),
+      };
+    }
     return fixtureUpstream(path, params);
   };
   const fixtureDetail = (type: "movie" | "tv") =>
@@ -120,6 +229,12 @@ try {
   }
   // Remote artwork is irrelevant to this measurement and would only add network noise.
   await page.route(/image\.tmdb\.org/, (route) => route.fulfill({ status: 204 }));
+  const profiler = args.includes("--profile")
+    ? await page.context().newCDPSession(page)
+    : undefined;
+  await profiler?.send("Profiler.enable");
+  await profiler?.send("Profiler.setSamplingInterval", { interval: 500 });
+  await profiler?.send("Profiler.start");
   const mark = async (label: string, work: () => Promise<unknown>) => {
     const started = Date.now();
     await work();
@@ -152,6 +267,85 @@ try {
     await page.goBack();
     await page.locator(".discovery-slide").first().waitFor();
   });
+  // People and long series are the heaviest screens, and cost grows as the cache fills.
+  await mark("browse people and series without reloading", async () => {
+    await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
+    await page.locator(".detail-intro h1").waitFor({ timeout: 60000 });
+    // Client-side navigation only, so the collections keep growing like a long real session.
+    for (let step = 0; step < 24; step++) {
+      await page.waitForTimeout(1200);
+      const cards = page.locator(".person-card, .title-card");
+      const count = await cards.count();
+      if (!count) break;
+      const before = await page.locator(".detail-intro h1").textContent();
+      await cards.nth((step * 7) % Math.min(count, 18)).click();
+      await page
+        .waitForFunction(
+          (title) => document.querySelector(".detail-intro h1")?.textContent !== title,
+          before,
+          { timeout: 30000 },
+        )
+        .catch(() => {});
+    }
+    const tab = page.getByRole("button", { name: "Acting", exact: true });
+    if (await tab.count()) {
+      await tab.click();
+      await page.waitForTimeout(1500);
+    }
+  });
+  await mark("lists, tags, activity and profile", async () => {
+    // Fill the account the way weeks of use would: tags, lists with many items, activity.
+    const listIds = await page.evaluate(
+      async ({ lists, perList, tags }) => {
+        const post = (json: unknown) =>
+          fetch("/api/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(json),
+          }).then((r) => r.json());
+        const batches = async (count: number, work: (n: number) => Promise<unknown>) => {
+          for (let n = 1; n <= count; n += 8)
+            await Promise.all(
+              Array.from({ length: Math.min(8, count - n + 1) }, (_, k) => work(n + k)),
+            );
+        };
+        const ids: string[] = [];
+        for (let l = 0; l < lists; l++) {
+          const made = await post({
+            type: "list.create",
+            operationId: crypto.randomUUID(),
+            title: `Perf list ${l}`,
+            description: "A list used to measure interface performance.",
+          });
+          const listId = made.entities.find((e: { kind: string }) => e.kind === "list").id;
+          ids.push(listId);
+          await batches(perList, (n) =>
+            post({
+              type: "list.add",
+              operationId: crypto.randomUUID(),
+              listId,
+              titleId: `tmdb:movie:${n + l * 3}`,
+            }),
+          );
+        }
+        await batches(tags, (n) =>
+          post({
+            type: "status",
+            operationId: crypto.randomUUID(),
+            titleId: `tmdb:movie:${n}`,
+            sentiment: n % 3 ? "liked" : "meh",
+            seen: n % 2 === 0,
+          }),
+        );
+        return ids;
+      },
+      { lists: listCount, perList: 40, tags: 200 },
+    );
+    for (const path of ["/lists", `/lists/${listIds[0]}`, "/activity", "/profile", "/"]) {
+      await page.goto(`${origin}${path}`);
+      await page.waitForTimeout(3500);
+    }
+  });
   await mark("lists and search", async () => {
     await page.goto(`${origin}/lists`);
     await page.waitForTimeout(2000);
@@ -165,6 +359,10 @@ try {
     ).__moviefinderTelemetry?.flush(),
   );
   await page.waitForTimeout(1000);
+  if (profiler) {
+    const { profile } = (await profiler.send("Profiler.stop")) as { profile: CpuProfile };
+    printProfile(profile);
+  }
   await browser.close();
   service.stop();
   await pool.end();
