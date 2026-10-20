@@ -103,7 +103,7 @@ async function remove(removed: { kind: Kind; id: string }[]) {
   }
 }
 export function useEntities(kind: Kind) {
-  const result = useLiveQuery((q) => q.from({ entity: collections[kind] }), [kind]);
+  const result = useLiveQuery({ query: (q) => q.from({ entity: collections[kind] }) });
   return (result.data ?? []) as Entity[];
 }
 export function useEntity(id: string | undefined) {
