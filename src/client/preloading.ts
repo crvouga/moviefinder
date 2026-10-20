@@ -1,6 +1,7 @@
 import { feedParams } from "../shared/contracts";
 import { discover, loadEntity, loadSocial, loadTitles, getEntity } from "./state";
 import { screenModules } from "./screen-modules";
+import { entityImages, warmImage } from "./images";
 import { track } from "./telemetry";
 
 function localURL(href: string) {
@@ -69,28 +70,10 @@ function warmImages(href: string, signal: AbortSignal) {
   if (!url?.pathname.startsWith("/title/")) return;
   const entity = getEntity(decodeURIComponent(url.pathname.slice("/title/".length)));
   if (!entity) return;
-  const images: HTMLImageElement[] = [];
-  for (const [path, size] of [
-    [entity.poster, "w500"],
-    [entity.backdrop, "w1280"],
-  ] as const) {
-    if (!path) continue;
-    const image = new Image();
-    image.fetchPriority = "low";
-    if (size === "w500" && !path.startsWith("https://")) {
-      image.sizes = "(max-width: 600px) 90vw, 420px";
-      image.srcset = ["w342", "w500", "w780"]
-        .map((s) => `https://image.tmdb.org/t/p/${s}${path} ${s.slice(1)}w`)
-        .join(", ");
-    }
-    image.src = path.startsWith("https://") ? path : `https://image.tmdb.org/t/p/${size}${path}`;
-    images.push(image);
-  }
-  const cancel = () =>
-    images.forEach((image) => {
-      image.removeAttribute("srcset");
-      image.removeAttribute("src");
-    });
+  const sources = entityImages(entity);
+  // The same slots the detail page renders, so these requests are the ones it will make.
+  const cancels = [warmImage(sources, "hero"), warmImage(sources, "backdrop")];
+  const cancel = () => cancels.forEach((stop) => stop?.());
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
 }

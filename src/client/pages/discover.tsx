@@ -77,7 +77,7 @@ const Slide = memo(function Slide({
 }) {
   return (
     <article className="discovery-slide">
-      <Poster entity={entity} priority={priority} />
+      <Poster entity={entity} slot="feed" priority={priority} />
       <div className="poster-shade" />
       <div className="slide-top">
         <span className="editorial-badge">

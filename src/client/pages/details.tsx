@@ -2,15 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { ArrowLeft, Star, Play, ArrowUpRight, Calendar, Clock } from "lucide-react";
 import { useEntity, useEntities, loadEntity, subscribeEntity, report } from "../state";
-import {
-  Poster,
-  Tags,
-  TitleCard,
-  External,
-  ShowMore,
-  usePaging,
-  imageUrl,
-} from "../components/common";
+import { Poster, Tags, TitleCard, External, ShowMore, usePaging } from "../components/common";
+import { Image } from "../components/image";
+import { entityImages } from "../images";
 import { Button } from "../components/ui/button";
 import type { Entity } from "../../shared/contracts";
 const text = (value: unknown) =>
@@ -112,12 +106,9 @@ export function DetailPage({ userId }: { userId: string }) {
   return (
     <div className="detail-page">
       {entity.backdrop && (
-        <div
-          className="detail-backdrop"
-          style={{
-            backgroundImage: `linear-gradient(0deg,var(--background),transparent),url(${imageUrl(entity.backdrop, "w1280")})`,
-          }}
-        />
+        <div className="detail-backdrop">
+          <Image images={entityImages(entity)} slot="backdrop" />
+        </div>
       )}
       <Button
         className="back-button"
@@ -129,7 +120,7 @@ export function DetailPage({ userId }: { userId: string }) {
         <ArrowLeft size={17} /> Back to the good stuff
       </Button>
       <section className="detail-hero">
-        <Poster entity={entity} priority />
+        <Poster entity={entity} slot="hero" priority />
         <div className="detail-intro">
           <span className="eyebrow">
             {person
@@ -261,7 +252,7 @@ export function DetailPage({ userId }: { userId: string }) {
               const p = byId.get(text(credit.data.personId));
               return p ? (
                 <Link key={credit.id} to="/title/$id" params={{ id: p.id }} className="person-card">
-                  <Poster entity={p} />
+                  <Poster entity={p} slot="thumb" />
                   <h3>{p.title}</h3>
                   <p>{credit.title || "Cast & crew"}</p>
                 </Link>
@@ -278,7 +269,7 @@ export function DetailPage({ userId }: { userId: string }) {
               const s = byId.get(sid);
               return (
                 <Link key={sid} to="/title/$id" params={{ id: sid }} className="season-card">
-                  <Poster entity={s} />
+                  <Poster entity={s} slot="thumb" />
                   <div>
                     <h3>{s?.title ?? "Season"}</h3>
                     <p>{s?.year ?? "Air date unavailable"}</p>
@@ -301,7 +292,7 @@ export function DetailPage({ userId }: { userId: string }) {
                   <span className="episode-number">
                     {text(e?.data.episodeNumber).padStart(2, "0")}
                   </span>
-                  <Poster entity={e} />
+                  <Poster entity={e} slot="still" />
                   <div>
                     <h3>{e?.title ?? "Episode"}</h3>
                     <small>{text(e?.data.releaseDate) || "Air date unavailable"}</small>

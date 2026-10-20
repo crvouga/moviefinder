@@ -39,6 +39,7 @@ export const ListCard = memo(function ListCard({ list }: { list: Entity }) {
               <Poster
                 key={entry.id}
                 entity={byId.get(fieldText(entry.data.titleId))}
+                slot="thumb"
                 className={`list-cover list-cover-${i}`}
               />
             ))
@@ -369,7 +370,7 @@ export function ListDetail({ userId }: { userId: string }) {
                       params={{ id: fieldText(entry.data.titleId) }}
                       className="entry-content"
                     >
-                      <Poster entity={e} />
+                      <Poster entity={e} slot="thumb" />
                       <div>
                         <h3>{e?.title ?? "Title details arriving"}</h3>
                         <p>

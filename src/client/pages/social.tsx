@@ -8,6 +8,7 @@ import type { FeedParams } from "../../shared/contracts";
 import { PageHeading, Empty, TitleCard, ShowMore, usePaging } from "../components/common";
 import { useTitles, useUsers } from "../components/viewer";
 import { ListCard } from "./lists";
+import { Image } from "../components/image";
 import { Button } from "../components/ui/button";
 import { Sheet } from "../components/ui/dialog";
 export function ActivityPage({ userId }: { userId: string }) {
@@ -159,7 +160,11 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
     <div className="standard-page profile-page">
       <header className="profile-header">
         <div className="profile-avatar">
-          {user?.poster ? <img src={user.poster} alt="" /> : (user?.title[0] ?? "M")}
+          <Image
+            images={user?.poster ? [{ path: user.poster, role: "poster" }] : []}
+            slot="avatar"
+            fallback={user?.title[0] ?? "M"}
+          />
         </div>
         <div>
           <span className="eyebrow">A LIFE IN GOOD STORIES</span>

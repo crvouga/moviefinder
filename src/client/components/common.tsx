@@ -1,5 +1,5 @@
 import { fieldText } from "../../shared/contracts";
-import { memo, useEffect, useState } from "react";
+import { memo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Film,
@@ -15,50 +15,37 @@ import {
 } from "lucide-react";
 import type { Entity } from "../../shared/contracts";
 import { useEntities, send, report } from "../state";
+import { entityImages, type SlotName } from "../images";
+import { Image } from "./image";
 import { Button } from "./ui/button";
 import { Sheet } from "./ui/dialog";
 import { useViewerStatus } from "./viewer";
-export const imageUrl = (path: string | null | undefined, size = "w500") =>
-  path
-    ? path.startsWith("https://")
-      ? path
-      : `https://image.tmdb.org/t/p/${size}${path}`
-    : undefined;
 export const titleHref = (id: string) => `/title/${encodeURIComponent(id)}`;
 export function Poster({
   entity,
+  slot = "card",
   priority = false,
   className = "",
 }: {
   entity?: Entity;
+  slot?: SlotName;
   priority?: boolean;
   className?: string;
 }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [entity?.poster]);
   return (
     <div className={`poster ${className}`}>
-      {entity?.poster && !failed ? (
-        <img
-          src={imageUrl(entity.poster)}
-          srcSet={
-            entity.poster.startsWith("https://")
-              ? undefined
-              : `${imageUrl(entity.poster, "w342")} 342w, ${imageUrl(entity.poster, "w500")} 500w, ${imageUrl(entity.poster, "w780")} 780w`
-          }
-          sizes="(max-width: 600px) 90vw, 420px"
-          alt={`${entity.title} poster`}
-          loading={priority ? "eager" : "lazy"}
-          fetchPriority={priority ? "high" : "auto"}
-          decoding="async"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <div className="poster-fallback">
-          <Film size={44} />
-          <span>{entity?.title ?? "Your next great watch"}</span>
-        </div>
-      )}
+      <Image
+        images={entityImages(entity)}
+        slot={slot}
+        alt={entity ? `${entity.title} poster` : ""}
+        priority={priority}
+        fallback={
+          <div className="poster-fallback">
+            <Film size={44} />
+            <span>{entity?.title ?? "Your next great watch"}</span>
+          </div>
+        }
+      />
     </div>
   );
 }
