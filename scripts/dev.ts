@@ -1,6 +1,9 @@
 import { openLocalDatabase, migrateLocalDatabase } from "./local-database";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+// Cookies on localhost are shared across ports, so other dev apps can push requests past the 16KB default.
+const headerLimit = 131072;
 const children = new Map<ChildProcess, Promise<number>>();
 const pidFile = ".local/dev.pid";
 let stopping = false;
@@ -33,6 +36,22 @@ function launch(args: string[], env: NodeJS.ProcessEnv) {
 }
 process.on("SIGINT", abort);
 process.on("SIGTERM", abort);
+process.on("SIGHUP", abort);
+function assertPortFree(port: number) {
+  return new Promise<void>((accept, reject) => {
+    const probe = createServer();
+    probe.once("error", (error: NodeJS.ErrnoException) =>
+      reject(
+        error.code === "EADDRINUSE"
+          ? new Error(
+              `Port ${port} is already in use, often by a stale dev process from an earlier run. Run \`lsof -nP -iTCP:${port} -sTCP:LISTEN\` to find it and stop it, then retry.`,
+            )
+          : error,
+      ),
+    );
+    probe.listen(port, "0.0.0.0", () => probe.close(() => accept()));
+  });
+}
 let database: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
 try {
   await mkdir(".local", { recursive: true, mode: 0o700 });
@@ -50,6 +69,7 @@ try {
   }
   await rm(pidFile, { force: true });
   await writeFile(pidFile, String(process.pid), { mode: 0o600, flag: "wx" });
+  await Promise.all([assertPortFree(8080), assertPortFree(5173)]);
   database = await openLocalDatabase();
   if (!stopping) {
     await migrateLocalDatabase(database.url);
@@ -62,8 +82,15 @@ try {
         PORT: "8080",
       };
       console.log("Local PostgreSQL ready. Starting MovieFinder at http://localhost:5173");
-      const backend = launch(["bun", "--watch", "src/server/index.ts"], env);
-      const frontend = launch(["bun", "x", "--no-install", "vp", "dev"], env);
+      const backend = launch(
+        ["bun", `--max-http-header-size=${headerLimit}`, "--watch", "src/server/index.ts"],
+        env,
+      );
+      const frontend = launch(["bun", "x", "--no-install", "vp", "dev"], {
+        ...env,
+        NODE_OPTIONS:
+          `${process.env.NODE_OPTIONS ?? ""} --max-http-header-size=${headerLimit}`.trim(),
+      });
       exitCode = await Promise.race([backend, frontend]);
     }
   }
