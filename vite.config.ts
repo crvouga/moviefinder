@@ -1,16 +1,17 @@
 import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwind from "@tailwindcss/vite";
+const apiTarget = `http://127.0.0.1:${process.env.PORT ?? 8080}`;
 export default defineConfig({
   fmt: { ignorePatterns: ["SPEC.md", ".super.engineering/config.json"] },
   plugins: [react(), tailwind()],
   server: {
     host: "0.0.0.0",
-    port: 5173,
-    strictPort: true,
+    port: Number(process.env.MOVIEFINDER_WEB_PORT) || undefined,
+    strictPort: Boolean(process.env.MOVIEFINDER_WEB_PORT),
     watch: { ignored: ["**/.local/**"] },
     fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/.local/**"] },
-    proxy: { "/api": "http://127.0.0.1:8080", "/health": "http://127.0.0.1:8080" },
+    proxy: { "/api": apiTarget, "/health": apiTarget },
   },
   build: { outDir: "dist", sourcemap: false },
   lint: {

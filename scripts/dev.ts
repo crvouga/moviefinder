@@ -16,8 +16,9 @@ const abort = () => {
       if (process.platform === "win32") child.kill();
       else process.kill(-child.pid, "SIGTERM");
     } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ESRCH"))
-        throw error;
+      // macOS reports EPERM instead of ESRCH for a process group whose leader already exited.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code !== "ESRCH" && code !== "EPERM") throw error;
     }
   }
 };
@@ -37,19 +38,18 @@ function launch(args: string[], env: NodeJS.ProcessEnv) {
 process.on("SIGINT", abort);
 process.on("SIGTERM", abort);
 process.on("SIGHUP", abort);
-function assertPortFree(port: number) {
-  return new Promise<void>((accept, reject) => {
+function freePort() {
+  return new Promise<number>((accept, reject) => {
     const probe = createServer();
-    probe.once("error", (error: NodeJS.ErrnoException) =>
-      reject(
-        error.code === "EADDRINUSE"
-          ? new Error(
-              `Port ${port} is already in use, often by a stale dev process from an earlier run. Run \`lsof -nP -iTCP:${port} -sTCP:LISTEN\` to find it and stop it, then retry.`,
-            )
-          : error,
-      ),
-    );
-    probe.listen(port, "0.0.0.0", () => probe.close(() => accept()));
+    probe.once("error", reject);
+    probe.listen(0, "0.0.0.0", () => {
+      const address = probe.address();
+      probe.close(() =>
+        typeof address === "object" && address
+          ? accept(address.port)
+          : reject(new Error("No port")),
+      );
+    });
   });
 }
 let database: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
@@ -69,19 +69,21 @@ try {
   }
   await rm(pidFile, { force: true });
   await writeFile(pidFile, String(process.pid), { mode: 0o600, flag: "wx" });
-  await Promise.all([assertPortFree(8080), assertPortFree(5173)]);
   database = await openLocalDatabase();
   if (!stopping) {
     await migrateLocalDatabase(database.url);
     if (!stopping) {
+      const [apiPort, webPort] = [await freePort(), await freePort()];
+      const origin = `http://localhost:${webPort}`;
       const env = {
         ...process.env,
         DATABASE_URL: database.url,
         NODE_ENV: "development",
-        MOVIEFINDER_ORIGIN: "http://localhost:5173",
-        PORT: "8080",
+        MOVIEFINDER_ORIGIN: origin,
+        MOVIEFINDER_WEB_PORT: String(webPort),
+        PORT: String(apiPort),
       };
-      console.log("Local PostgreSQL ready. Starting MovieFinder at http://localhost:5173");
+      console.log(`Local PostgreSQL ready. Starting MovieFinder at ${origin}`);
       const backend = launch(
         ["bun", `--max-http-header-size=${headerLimit}`, "--watch", "src/server/index.ts"],
         env,
