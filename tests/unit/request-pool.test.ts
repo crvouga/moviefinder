@@ -95,6 +95,19 @@ describe("settled results", () => {
     expect(pool.has("entity:b")).toBe(true);
     pending.resolve("b");
     await expect(inflight).resolves.toBe("b");
+    // An event received during the read must not make its eventual answer fresh again.
+    const reload = vi.fn(async () => "updated");
+    await expect(pool.run("entity:b", reload)).resolves.toBe("updated");
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+  it("rechecks completeness of a foreground answer before reusing it", async () => {
+    const pool = new RequestPool<string>();
+    await pool.run("feed", async () => "partial");
+    const load = vi.fn(async () => "complete");
+    await expect(pool.run("feed", load, { fresh: (value) => value === "complete" })).resolves.toBe(
+      "complete",
+    );
+    expect(load).toHaveBeenCalledTimes(1);
   });
   it("answers from a primed result until it expires", async () => {
     const pool = new RequestPool<string>(3);
@@ -120,4 +133,24 @@ describe("settled results", () => {
     await pool.run("entity:b", async () => "partial", { speculative: true, ttl: () => 60_000 });
     await expect(pool.run("entity:b", load, { speculative: true })).resolves.toBe("partial");
   });
+});
+
+it("reports adoption of a completed speculative read without starting another load", async () => {
+  const events: { event: string; fields: Record<string, string | number | boolean | undefined> }[] =
+    [];
+  const pool = new RequestPool<string>(3, (event, fields) => events.push({ event, fields }));
+  let loads = 0;
+  const load = async () => {
+    loads++;
+    return "ready";
+  };
+  await pool.run("entity:prepared", load, { speculative: true });
+  await pool.run("entity:prepared", load);
+  expect(loads).toBe(1);
+  expect(events.find((row) => row.event === "join")?.fields).toMatchObject({
+    adopted: true,
+    settled: true,
+    speculative: false,
+  });
+  expect(events.find((row) => row.event === "complete")?.fields.speculative).toBe(true);
 });

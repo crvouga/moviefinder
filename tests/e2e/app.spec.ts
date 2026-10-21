@@ -76,6 +76,55 @@ test("registration, persistent session, discovery, tagging, details, and lists",
     true,
   );
 });
+test("add-to-list form stays responsive while typing, creating, closing and reopening", async ({
+  page,
+}) => {
+  const nativeDialogs: string[] = [];
+  const errors: string[] = [];
+  page.on("dialog", async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+  await register(page);
+  const slide = page.locator(".swiper-slide-active");
+  const initialTitle = await slide.locator("h2").textContent();
+  const drawer = page.getByRole("dialog", { name: "Save for a good night" });
+  await slide.getByRole("button", { name: "Add to list" }).click();
+  await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
+  expect(nativeDialogs).toEqual([]);
+  const name = drawer.getByRole("textbox", { name: "List name", exact: true });
+  await name.pressSequentially("A responsive movie night", { delay: 20 });
+  await expect(name).toHaveValue("A responsive movie night");
+  await page.keyboard.press("Tab");
+  await expect(drawer.getByRole("button", { name: "Create and add", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(drawer).toBeHidden();
+  await slide.getByRole("button", { name: "Add to list" }).click();
+  const saved = drawer.getByRole("button", { name: /A responsive movie night/ });
+  await expect(saved).toBeDisabled();
+  await expect(saved).toContainText("1 titles");
+  await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
+  await name.fill("Cancel this draft");
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await expect(slide.locator("h2")).toHaveText(initialTitle!);
+  await slide.locator(".slide-title").click();
+  await expect(page.locator(".detail-intro h1")).toHaveText(initialTitle!);
+  await page.getByRole("button", { name: "Add to list" }).click();
+  await expect(saved).toBeDisabled();
+  await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
+  await name.fill("Detail page draft");
+  await drawer.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(drawer).toBeHidden();
+  await page.getByRole("button", { name: "Like", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Like", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(nativeDialogs).toEqual([]);
+  expect(errors).toEqual([]);
+});
 test("advances through virtualized posters and restores the selected title after navigation", async ({
   page,
   isMobile,
@@ -461,4 +510,260 @@ test("starts data reads on hover, focus and press before navigating, and aborts 
   await page.locator("#abandoned-target").dispatchEvent("pointerout");
   await failed;
   release();
+});
+
+test("opens cached neighbour graphs and supports back/forward while detail responses and images are blocked", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, "connection", {
+      configurable: true,
+      value: { saveData: true, effectiveType: "4g" },
+    }),
+  );
+  await register(page, "/title/tmdb%3Amovie%3A550");
+  // Only seed the server's person cache. A fresh page must receive the neighbour graph with
+  // the movie response, before any direct person HTTP request is allowed through.
+  expect((await page.request.get("/api/title/tmdb%3Aperson%3A819?ready=1")).ok()).toBe(true);
+  await page.reload();
+  await expect(page.locator(".person-card").first()).toBeVisible();
+  let release!: () => void, releaseImage!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const imageBlocked = new Promise<void>((resolve) => {
+    releaseImage = resolve;
+  });
+  await page.route("**/transition-artwork.jpg", async (route) => {
+    await imageBlocked;
+    await route
+      .fulfill({
+        contentType: "image/gif",
+        body: Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64"),
+      })
+      .catch(() => {});
+  });
+  await page.route("**/api/title/*819*", async (route) => {
+    await blocked;
+    try {
+      const response = await route.fetch();
+      const result = await response.json();
+      for (const entity of result.entities)
+        if (entity.id === "tmdb:person:819") entity.poster = "/transition-artwork.jpg";
+      await route.fulfill({ response, json: result });
+    } catch {
+      /* Back/forward navigation may abort an abandoned read. */
+    }
+  });
+  const requested = page.waitForRequest(
+    (r) => r.url().includes("/api/title/") && r.url().includes("819"),
+  );
+  await page.locator(".person-card").first().click();
+  await requested;
+  try {
+    await expect(page.locator('.detail-page[data-title-id="tmdb:person:819"]')).toBeVisible({
+      timeout: 500,
+    });
+    await expect(page.locator(".detail-intro h1")).toHaveText("Edward Norton");
+    await expect(page.getByRole("heading", { name: "A career in stories." })).toBeVisible({
+      timeout: 500,
+    });
+    await expect(page.locator(".detail-page")).toHaveAttribute("data-content-ready", "true");
+    await expect(page.locator(".detail-page")).toHaveAttribute("data-graph-scope", "viewport");
+    await page.goBack();
+    await expect(page.locator(".detail-intro h1")).toHaveText("Fight Club", { timeout: 500 });
+    await page.goForward();
+    await expect(page.locator(".detail-intro h1")).toHaveText("Edward Norton", { timeout: 500 });
+    const imageRequested = page.waitForRequest((r) => r.url().endsWith("/transition-artwork.jpg"));
+    release();
+    await imageRequested;
+    await expect(page.getByRole("heading", { name: "A career in stories." })).toBeVisible();
+    await expect(page.locator(".detail-hero img")).toHaveJSProperty("complete", false);
+    await expect(page.locator(".detail-page")).toHaveAttribute("data-graph-scope", "full");
+    releaseImage();
+    await expect(page.locator(".detail-hero img")).toHaveJSProperty("complete", true);
+  } finally {
+    release();
+    releaseImage();
+  }
+});
+
+test("all primary destinations open without waiting for API responses or additional screen scripts", async ({
+  page,
+}) => {
+  await register(page);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    /\/api\/(?:discover|title|titles|lists|profile|social-search|state)(?:[/?]|$)/,
+    async (route) => {
+      await blocked;
+      await route.continue().catch(() => {});
+    },
+  );
+  const scripts: string[] = [];
+  page.on("request", (request) => {
+    if (request.resourceType() === "script") scripts.push(request.url());
+  });
+  try {
+    for (const [label, path, heading] of [
+      ["Search", "/search", "What are you in the mood for?"],
+      ["Collections", "/lists", "A list for every kind of night."],
+      ["Community", "/activity", "In good company."],
+      ["Your profile", "/profile", ""],
+      ["Discover", "/", "Find your next obsession."],
+    ]) {
+      await page.getByRole("link", { name: label!, exact: true }).first().click();
+      await expect(page.locator("#main-content")).toHaveAttribute("data-route", path!, {
+        timeout: 500,
+      });
+      if (heading)
+        await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible({
+          timeout: 500,
+        });
+    }
+    expect(scripts).toEqual([]);
+  } finally {
+    release();
+  }
+});
+
+for (const saveData of [false, true]) {
+  test(`prepares a bounded set of visible links and respects Save-Data (${saveData})`, async ({
+    page,
+  }) => {
+    await page.addInitScript((saveData) => {
+      Object.defineProperty(navigator, "connection", {
+        configurable: true,
+        value: { saveData, effectiveType: "4g" },
+      });
+    }, saveData);
+    await register(page, "/search");
+    await expect(
+      page.getByRole("heading", { name: "What are you in the mood for?" }),
+    ).toBeVisible();
+    const requested = new Set<string>();
+    page.on("request", (request) => {
+      const path = decodeURIComponent(new URL(request.url()).pathname);
+      if (/\/api\/title\/tmdb:movie:94\d{3}$/.test(path)) requested.add(path);
+    });
+    await page.evaluate(() => {
+      for (let index = 0; index < 20; index++) {
+        const link = document.createElement("a");
+        link.href = `/title/${encodeURIComponent(`tmdb:movie:${94000 + index}`)}`;
+        link.className = "title-card";
+        link.textContent = "Visible candidate";
+        link.style.cssText = `position:fixed;left:10px;top:${100 + index * 10}px;width:40px;height:10px`;
+        document.body.append(link);
+      }
+    });
+    if (!saveData) await expect.poll(() => requested.size).toBe(2);
+    await page.waitForTimeout(900);
+    expect(requested.size).toBe(saveData ? 0 : 2);
+  });
+}
+
+test("preserves text typed while an earlier search destination is preparing", async ({ page }) => {
+  await register(page, "/search");
+  const input = page.getByRole("textbox", { name: "Search movies, series, people, and lists" });
+  await expect(input).toBeVisible();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/discover?**", async (route) => {
+    const response = await route.fetch();
+    if (new URL(route.request().url()).searchParams.get("q") === "Fight") await blocked;
+    await route.fulfill({ response });
+  });
+  const requested = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/discover" &&
+      new URL(request.url()).searchParams.get("q") === "Fight",
+  );
+  await input.fill("Fight");
+  await requested;
+  await input.fill("Game");
+  release();
+  await expect(page).toHaveURL(/q=Game/);
+  await expect(input).toHaveValue("Game");
+});
+
+test("applies discovery filters immediately while the next feed response is blocked", async ({
+  page,
+}) => {
+  await register(page);
+  const original = await page.locator(".swiper-slide-active .slide-title h2").textContent();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/discover?**", async (route) => {
+    const response = await route.fetch();
+    if (new URL(route.request().url()).searchParams.get("type") === "tv") await blocked;
+    await route.fulfill({ response });
+  });
+  const requested = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/discover" &&
+      new URL(request.url()).searchParams.get("type") === "tv",
+  );
+  await page.getByRole("button", { name: "TV shows", exact: true }).click();
+  await requested;
+  await expect(page).toHaveURL(/type=tv/);
+  await expect(page.getByRole("button", { name: "TV shows", exact: true })).toHaveClass("active");
+  await expect(page.getByRole("heading", { name: original!, exact: true })).toHaveCount(0);
+  release();
+  await expect(page.locator(".swiper-slide-active .slide-title h2")).toHaveText("Game of Thrones");
+});
+
+test("keeps search results distinct from an earlier filtered discovery query", async ({ page }) => {
+  await register(page, "/?q=Fight&type=movie");
+  await expect(page.locator(".discovery-slide").first()).toBeVisible();
+  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Search movies, series, people, and lists" })
+    .fill("Fight");
+  await expect(page.getByRole("heading", { name: "Game of Thrones", exact: true })).toBeVisible();
+});
+
+test("avoids detail requests while rapidly skimming links", async ({ page }) => {
+  await register(page, "/search");
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    const path = decodeURIComponent(new URL(request.url()).pathname);
+    if (/\/api\/title\/tmdb:movie:95\d{3}$/.test(path)) reads.push(path);
+  });
+  await page.evaluate(async () => {
+    for (let index = 0; index < 12; index++) {
+      const link = document.createElement("a");
+      link.href = `/title/${encodeURIComponent(`tmdb:movie:${95000 + index}`)}`;
+      link.style.cssText = "position:absolute;top:-10000px;left:0";
+      document.body.append(link);
+      link.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      link.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
+      );
+      link.remove();
+    }
+  });
+  await page.waitForTimeout(500);
+  expect(reads).toEqual([]);
+});
+
+test("production browsing does not install or expose development diagnostics", async ({ page }) => {
+  await register(page);
+  expect(await page.evaluate(() => "__moviefinderTelemetry" in window)).toBe(false);
+  const response = await page.evaluate(async () => {
+    const response = await fetch("/api/telemetry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: [] }),
+    });
+    return { status: response.status, serverTiming: response.headers.get("Server-Timing") };
+  });
+  expect(response).toEqual({ status: 404, serverTiming: null });
 });

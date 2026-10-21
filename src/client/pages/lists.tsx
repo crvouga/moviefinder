@@ -1,3 +1,4 @@
+import { bindNavigation } from "../telemetry";
 import { feedParams } from "../../shared/contracts";
 import { fieldText } from "../../shared/contracts";
 import { memo, useEffect, useRef, useState } from "react";
@@ -73,6 +74,7 @@ export function ListsPage({ userId }: { userId: string }) {
       | undefined;
   useEffect(() => {
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     void loadSocial("lists", tab, undefined, controller.signal).catch((error) => {
       if (!controller.signal.aborted) report(error);
     });
@@ -222,6 +224,7 @@ export function ListDetail({ userId }: { userId: string }) {
     drag = useRef<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     void loadSocial("list", listId, undefined, controller.signal).catch((error) => {
       if (!controller.signal.aborted) report(error);
     });
@@ -589,6 +592,7 @@ function AddTitles({
     if (!open) return;
     let unsubscribe: undefined | (() => void);
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     const timer = setTimeout(() => {
       const params = feedParams.parse({ q });
       void discover(params, controller.signal)

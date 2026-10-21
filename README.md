@@ -11,7 +11,7 @@ Requires Bun 1.4.2, a supported Node runtime (22.22.3 used here), Atlas, and the
 3. Run `bun run dev`, or choose **Run → MovieFinder** in super.engineering.
 4. Open the `http://localhost:<port>` URL printed at startup and register an account on the first run.
 
-Startup initializes a local PostgreSQL cluster, creates the local database/schema, applies committed Atlas migrations, and starts both development servers. Both servers use free ports chosen at each start (the URL is printed), and Vite+ proxies API requests to Bun. The database listens only on loopback, uses an available port, and persists under ignored `.local/postgres`. Generated local credentials stay in private ignored `.local/postgres.json`; they never enter Git or Docker build contexts. `bun run telemetry` summarizes timings recorded while you use the app; see [observability](docs/observability.md). Stop shuts down the development servers and their PostgreSQL process while retaining your data. A later run reopens the same database.
+Startup initializes a local PostgreSQL cluster, creates the local database/schema, applies committed Atlas migrations, and starts both development servers. Both servers use free ports chosen at each start (the URL is printed), and Vite+ proxies API requests to Bun. The database listens only on loopback, uses an available port, and persists under ignored `.local/postgres`. Generated local credentials stay in private ignored `.local/postgres.json`; they never enter Git or Docker build contexts. `bun run telemetry watch --since 5m` shows live bottlenecks while you browse, and `bun run telemetry traces` connects navigation to API, database and provider work; see [observability](docs/observability.md). Stop shuts down the development servers and their PostgreSQL process while retaining your data. A later run reopens the same database.
 
 The local launcher always supplies its own database URL, overriding any shared `DATABASE_URL` injected by Vault. Vault still supplies the real TMDB token and authentication secret. `dev:local` starts the same embedded database when those other variables have already been injected. Shared infrastructure allocation requirements apply only to explicit shared commands and deployment.
 
@@ -36,23 +36,24 @@ If an older run reported missing `moviefinder.user` or allocation errors, stop i
 
 ## Commands
 
-| Command                             | Purpose                                                                           |
-| ----------------------------------- | --------------------------------------------------------------------------------- |
-| `bun run check`                     | Oxfmt, Oxlint, native TypeScript 7, unit/property tests through Vite+             |
-| `bun run format`                    | Format through Vite+                                                              |
-| `bun run lint`                      | Lint through Vite+                                                                |
-| `bun run build`                     | Production React bundle through Vite+                                             |
-| `bun run test:integration`          | Isolated embedded PostgreSQL, Atlas migrations, API/concurrency tests             |
-| `bun run test:e2e`                  | Isolated embedded PostgreSQL and Playwright mobile/desktop; build first           |
-| `bun run test:local-database`       | Verify embedded initialization, migrations, persistence, attachment, and shutdown |
-| `bun run db:migrate:shared`         | Apply shared migrations through Vault after explicit allocation approval          |
-| `bun run db:validate`               | Validate Atlas migration integrity                                                |
-| `bun run db:check`                  | Check local embedded database tables/columns                                      |
-| `bun run db:diff change_name`       | Generate an Atlas migration from atlas/schema.sql                                 |
-| `bun run db:migrate`                | Apply local embedded PostgreSQL migrations                                        |
-| `bun run db:status`                 | Read local embedded PostgreSQL migration status                                   |
-| `bun run db:drift`                  | Compare local embedded PostgreSQL with the desired SQL schema                     |
-| `vault run -- bun scripts/smoke.ts` | Explicit live TMDB smoke check; no database writes                                |
+| Command                             | Purpose                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `bun run check`                     | Oxfmt, Oxlint, native TypeScript 7, unit/property tests through Vite+                |
+| `bun run format`                    | Format through Vite+                                                                 |
+| `bun run lint`                      | Lint through Vite+                                                                   |
+| `bun run build`                     | Production React bundle through Vite+                                                |
+| `bun run test:integration`          | Isolated embedded PostgreSQL, Atlas migrations, API/concurrency tests                |
+| `bun run test:e2e`                  | Isolated embedded PostgreSQL and Playwright mobile/desktop; build first              |
+| `bun run test:observability`        | Development browser, API, isolated database, private telemetry files and CLI reports |
+| `bun run test:local-database`       | Verify embedded initialization, migrations, persistence, attachment, and shutdown    |
+| `bun run db:migrate:shared`         | Apply shared migrations through Vault after explicit allocation approval             |
+| `bun run db:validate`               | Validate Atlas migration integrity                                                   |
+| `bun run db:check`                  | Check local embedded database tables/columns                                         |
+| `bun run db:diff change_name`       | Generate an Atlas migration from atlas/schema.sql                                    |
+| `bun run db:migrate`                | Apply local embedded PostgreSQL migrations                                           |
+| `bun run db:status`                 | Read local embedded PostgreSQL migration status                                      |
+| `bun run db:drift`                  | Compare local embedded PostgreSQL with the desired SQL schema                        |
+| `vault run -- bun scripts/smoke.ts` | Explicit live TMDB smoke check; no database writes                                   |
 
 The test scripts refuse non-loopback test URLs or database names that do not end in `_test`. Fixture upstream responses are used only by tests. Production has no mock catalog or authentication bypass.
 

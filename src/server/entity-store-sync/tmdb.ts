@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { metrics } from "../log";
-import { record } from "../telemetry";
+import { record, timed } from "../telemetry";
 export class UpstreamError extends Error {
   constructor(
     public status: number,
@@ -53,7 +53,7 @@ export function createTmdb(
         ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
         : AbortSignal.timeout(15000),
     });
-    record("upstream", `GET ${path}`, {
+    record("upstream-headers", `GET ${path}`, {
       status: res.status,
       ms: Math.round((performance.now() - started) * 10) / 10,
       waited: delay,
@@ -71,7 +71,9 @@ export function createTmdb(
       }
       throw new UpstreamError(res.status, retryAfter);
     }
-    return z.record(z.string(), z.unknown()).parse(await res.json());
+    return timed("parse", "provider", async () =>
+      z.record(z.string(), z.unknown()).parse(await res.json()),
+    );
   };
 }
 export type Tmdb = ReturnType<typeof createTmdb>;

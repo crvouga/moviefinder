@@ -1,18 +1,19 @@
+import { bindNavigation } from "../telemetry";
 import { fieldText } from "../../shared/contracts";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearch, useNavigate } from "@tanstack/react-router";
 import { Search, ArrowUpRight, Users, Bookmark } from "lucide-react";
-import { feedParams, type Entity } from "../../shared/contracts";
+import { feedParams, stableSerialize, type Entity } from "../../shared/contracts";
 import { discover, subscribeQuery, useEntities, report, loadSocial } from "../state";
 import { TitleCard, PageHeading, Empty, ShowMore, usePaging } from "../components/common";
 const noIds: string[] = [];
 export function SearchPage() {
-  const location = useLocation(),
+  const search = useSearch({ strict: false }),
     navigate = useNavigate(),
-    initial = new URLSearchParams(location.searchStr).get("q") ?? "",
+    initial = fieldText(search.q ?? ""),
     [input, setInput] = useState(initial),
-    [queryId, setQueryId] = useState(""),
-    [query, setQuery] = useState(initial),
+    submitted = useRef(initial.trim()),
+    query = initial.trim(),
     movies = useEntities("movie"),
     tv = useEntities("tv"),
     people = useEntities("person"),
@@ -20,16 +21,22 @@ export function SearchPage() {
     lists = useEntities("list"),
     queries = useEntities("query");
   useEffect(() => {
+    if (input.trim() === initial.trim()) return;
     const timer = setTimeout(() => {
-      setQuery(input.trim());
+      submitted.current = input.trim();
       void navigate({ to: "/search", search: input ? { q: input } : {}, replace: true });
     }, 300);
     return () => clearTimeout(timer);
-  }, [input]);
+  }, [input, initial]);
+  useEffect(() => {
+    // A completed request must not overwrite text entered while it was preparing.
+    if (initial.trim() !== submitted.current) setInput(initial);
+  }, [initial]);
   useEffect(() => {
     if (!query) return;
     const params = feedParams.parse({ q: query }),
       abort = new AbortController();
+    bindNavigation(abort.signal, window.location.href);
     void loadSocial("search", query, undefined, abort.signal).catch((error) => {
       if (!abort.signal.aborted) report(error);
     });
@@ -37,7 +44,6 @@ export function SearchPage() {
     void discover(params, abort.signal)
       .then((id) => {
         if (!abort.signal.aborted) {
-          setQueryId(id);
           unsub = subscribeQuery(id, params);
         }
       })
@@ -49,7 +55,10 @@ export function SearchPage() {
       unsub?.();
     };
   }, [query]);
-  const meta = queries.find((q) => q.id === queryId),
+  const queryKey = useMemo(() => stableSerialize(feedParams.parse({ q: query })), [query]);
+  const meta = queries.find(
+      (q) => q.id.startsWith("discover:") && stableSerialize(q.data.params) === queryKey,
+    ),
     remoteIds = (meta?.data.ids as string[] | undefined) ?? noIds,
     paging = usePaging(query, 48);
   // Provider-ranked results first, then other cached matches. Computed once per change.

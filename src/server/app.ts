@@ -1,3 +1,4 @@
+import { isTraceId } from "../shared/telemetry";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { socialQueries } from "./social";
@@ -13,7 +14,7 @@ import { createQueries } from "./queries";
 import { createSync } from "./entity-store-sync";
 import { createTmdb, type Tmdb } from "./entity-store-sync/tmdb";
 import { AppError, metrics, log } from "./log";
-import { record, telemetryEnabled, timed } from "./telemetry";
+import { record, telemetryEnabled, timed, inTrace, withoutServerTelemetry } from "./telemetry";
 import { executeCommand } from "./commands";
 import { snapshot } from "./state";
 import { replay } from "./events";
@@ -43,7 +44,10 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
     c.header("X-Frame-Options", "DENY");
-    await next();
+    const incomingTrace = c.req.header("X-Moviefinder-Trace");
+    const traceId = telemetryEnabled() && isTraceId(incomingTrace) ? incomingTrace : requestId;
+    if (c.req.path === "/api/telemetry") await withoutServerTelemetry(next);
+    else await inTrace({ traceId, requestId, spanId: requestId }, next);
     if (c.req.path !== "/api/events") {
       const milliseconds = Math.round(performance.now() - start);
       log("http", "Request completed", {
@@ -56,12 +60,16 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
       if (telemetryEnabled() && c.req.path !== "/api/telemetry" && c.req.path.startsWith("/api/"))
         record("http", `${c.req.method} ${c.req.path}`, {
           requestId,
+          traceId,
+          spanId: requestId,
           status: c.res.status,
           ms: Math.round((performance.now() - start) * 10) / 10,
-          bytes: (await c.res.clone().arrayBuffer()).byteLength,
+          bytes: Number(c.res.headers.get("Content-Length")) || undefined,
           query: [...new URL(c.req.url).searchParams.keys()].join(",") || undefined,
         });
     }
+    if (telemetryEnabled() && c.req.path !== "/api/events")
+      c.header("Server-Timing", `app;dur=${Math.round((performance.now() - start) * 10) / 10}`);
   });
   root.onError((error, c) => {
     if (error instanceof AppError)
@@ -150,23 +158,31 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
       record("snapshot", "size", { entities: state.entities.length });
       return c.json(state);
     })
-    .get("/api/discover", zValidator("query", feedParams), async (c) => {
-      try {
-        return c.json(
-          await queries.discover(c.req.valid("query"), c.get("userId"), c.req.raw.signal),
-        );
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          (error.message.includes("cursor") || error.message.includes("Cursor"))
-        )
-          throw new AppError(400, "Invalid feed cursor");
-        throw error;
-      }
-    })
+    .get(
+      "/api/discover",
+      zValidator("query", feedParams.safeExtend({ ready: z.literal("1").optional() })),
+      async (c) => {
+        try {
+          const { ready, ...params } = c.req.valid("query");
+          return c.json(
+            await queries.discover(params, c.get("userId"), c.req.raw.signal, ready === "1"),
+          );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            (error.message.includes("cursor") || error.message.includes("Cursor"))
+          )
+            throw new AppError(400, "Invalid feed cursor");
+          throw error;
+        }
+      },
+    )
     .get(
       "/api/title/:id",
-      zValidator("query", z.object({ warm: z.literal("1").optional() })),
+      zValidator(
+        "query",
+        z.object({ warm: z.literal("1").optional(), ready: z.literal("1").optional() }),
+      ),
       async (c) => {
         const parsed = sourceId.safeParse(c.req.param("id"));
         if (!parsed.success) throw new AppError(400, "Invalid canonical title identity");
@@ -176,6 +192,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
             c.get("userId"),
             c.req.raw.signal,
             c.req.valid("query").warm === "1",
+            c.req.valid("query").ready === "1",
           ),
         );
       },

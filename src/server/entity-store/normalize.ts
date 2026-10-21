@@ -53,13 +53,35 @@ export function summarize(entity: Entity): Entity {
   return {
     ...rest,
     data: {
-      ...Object.fromEntries(Object.entries(entity.data).filter(([, v]) => primitive(v))),
+      ...Object.fromEntries(
+        Object.entries(entity.data).filter(
+          ([key, v]) => key !== "graphVersion" && key !== "graphScope" && primitive(v),
+        ),
+      ),
       summary: true,
     },
   };
 }
 export function summaryOf(id: string, payload: unknown, version = 1): Entity[] {
-  const primary = normalize(id, payload, version).find((e) => e.id === id);
+  // Summary reads never need to build and then discard hundreds of relation entities.
+  const source = record(payload);
+  const primary = normalize(
+    id,
+    {
+      ...source,
+      credits: undefined,
+      aggregate_credits: undefined,
+      guest_stars: undefined,
+      recommendations: undefined,
+      similar: undefined,
+      combined_credits: undefined,
+      known_for: undefined,
+      seasons: undefined,
+      episodes: undefined,
+      created_by: undefined,
+    },
+    version,
+  ).find((e) => e.id === id);
   return primary ? [summarize(primary)] : [];
 }
 export function normalize(id: string, payload: unknown, version = 1): Entity[] {
@@ -214,6 +236,7 @@ export function normalize(id: string, payload: unknown, version = 1): Entity[] {
     genres,
     related: [...creditIds, ...seasonIds, ...episodeIds, ...Object.values(relationGroups).flat()],
     data: {
+      graphVersion: version,
       filmographyCredits: related
         .filter((e) => e.kind === "credit" && e.data.personId === id)
         .map((e) => e.id),

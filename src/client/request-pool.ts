@@ -1,3 +1,4 @@
+import { bindContext, contextFor, telemetryEnabled, telemetryKey } from "./telemetry";
 type Entry<T> = {
   controller: AbortController;
   consumers: Set<object>;
@@ -6,9 +7,11 @@ type Entry<T> = {
   started: boolean;
   settled: boolean;
   expires: number;
+  invalidated?: boolean;
   // Whether the first interest was speculative, and the answer it received.
   speculative: boolean;
   value?: T;
+  adopted?: boolean;
 };
 
 // Retains only request metadata/results such as query IDs. Entities remain in TanStack DB.
@@ -19,7 +22,7 @@ export class RequestPool<T> {
     private concurrency = 3,
     private onEvent: (
       event: string,
-      fields: Record<string, string | number | boolean>,
+      fields: Record<string, string | number | boolean | undefined>,
     ) => void = () => {},
   ) {}
 
@@ -30,24 +33,22 @@ export class RequestPool<T> {
       signal?: AbortSignal;
       speculative?: boolean;
       ttl?: () => number;
-      // A settled speculative answer satisfies a real request only if this accepts it, e.g.
-      // speculation may have declined to wait for work that navigation needs completed.
+      // A settled answer is reusable only if it meets this consumer's requirements.
+      // A route loader, for example, requires complete coverage even after a foreground read.
       fresh?: (value: T) => boolean;
     } = {},
   ): Promise<T> {
     const { signal, speculative = false, ttl = () => 30_000, fresh } = options;
     if (signal?.aborted) return Promise.reject(signal.reason);
     let entry = this.entries.get(key);
-    if (
-      entry?.settled &&
-      (entry.expires <= Date.now() ||
-        (!speculative && entry.speculative && fresh && !fresh(entry.value as T)))
-    ) {
+    if (entry?.settled && (entry.expires <= Date.now() || (fresh && !fresh(entry.value as T)))) {
       this.entries.delete(key);
       entry = undefined;
     }
     if (!entry) {
       const controller = new AbortController();
+      if (telemetryEnabled) bindContext(controller.signal, { traceId: crypto.randomUUID() });
+      const created = performance.now();
       let resolve!: (value: T) => void;
       let reject!: (reason: unknown) => void;
       const promise = new Promise<T>((yes, no) => {
@@ -66,17 +67,38 @@ export class RequestPool<T> {
           if (entry!.started) return;
           entry!.started = true;
           this.running++;
-          this.onEvent("start", { key, running: this.running, queued: this.queued() });
+          const started = performance.now();
+          this.onEvent("start", {
+            key,
+            ...contextFor(controller.signal),
+            speculative,
+            queueMs: started - created,
+            running: this.running,
+            queued: this.queued(),
+          });
           void load(controller.signal)
             .then(
               (value) => {
                 entry!.settled = true;
                 entry!.value = value;
-                entry!.expires = Date.now() + ttl();
+                entry!.expires = entry!.invalidated ? 0 : Date.now() + ttl();
+                this.onEvent("complete", {
+                  key,
+                  ...contextFor(controller.signal),
+                  speculative,
+                  adopted: entry!.adopted ?? false,
+                  ms: performance.now() - started,
+                });
                 resolve(value);
               },
               (error: unknown) => {
                 if (this.entries.get(key) === entry) this.entries.delete(key);
+                this.onEvent("failed", {
+                  key,
+                  ...contextFor(controller.signal),
+                  speculative,
+                  ms: performance.now() - started,
+                });
                 reject(error);
               },
             )
@@ -97,7 +119,11 @@ export class RequestPool<T> {
       key,
       speculative,
       settled: current.settled,
+      ...contextFor(signal),
+      workId: contextFor(current.controller.signal)?.traceId ?? telemetryKey(key) ?? "",
+      adopted: current.speculative && !speculative,
     });
+    if (current.speculative && !speculative) current.adopted = true;
     const consumer = {};
     current.consumers.add(consumer);
     // Navigation joins/promotes speculative work without waiting for the speculative budget.
@@ -135,10 +161,13 @@ export class RequestPool<T> {
     for (const entry of this.entries.values()) if (!entry.started) queued++;
     return queued;
   }
-  // Drops completed results, optionally only those whose key matches. In-flight work is kept.
+  // In-flight consumers keep their work, but an event prevents caching its eventual answer.
   invalidate(match: (key: string) => boolean = () => true) {
-    for (const [key, entry] of this.entries)
-      if (entry.settled && match(key)) this.entries.delete(key);
+    for (const [key, entry] of this.entries) {
+      if (!match(key)) continue;
+      if (entry.settled) this.entries.delete(key);
+      else entry.invalidated = true;
+    }
   }
   // Records a result obtained some other way, e.g. one response that answered many keys.
   prime(key: string, value: T, ttl: number, speculative = true) {

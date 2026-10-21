@@ -1,3 +1,4 @@
+import { track, contextFor, telemetryEnabled } from "./telemetry";
 import type { Entity } from "../shared/contracts";
 
 // One place decides which image to fetch and at what resolution. Screens pass every image an
@@ -119,22 +120,148 @@ export function resolveImage(
   };
 }
 
-// Starts the same request the matching <Image> will make, so the browser cache answers it.
-export function warmImage(
+// Decoded artwork is shared by predictions and navigation; no entity data lives here.
+type PreparedImage = {
+  image: HTMLImageElement;
+  trace?: ReturnType<typeof contextFor>;
+  promise: Promise<void>;
+  consumers: number;
+  settled: boolean;
+  failed: boolean;
+  expires: number;
+  cancel: () => void;
+};
+const prepared = new Map<string, PreparedImage>();
+const imageKey = (image: ResolvedImage) =>
+  `${image.src}|${image.srcSet ?? ""}|${image.sizes ?? ""}`;
+export function imageUnavailable(image: ResolvedImage) {
+  const entry = prepared.get(imageKey(image));
+  return !!entry?.failed && entry.expires > Date.now();
+}
+export function prepareImage(
   images: readonly ImageSource[],
   slot: ImageSlot | SlotName,
-): (() => void) | undefined {
+  signal?: AbortSignal,
+  priority = false,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const began = performance.now();
+  const context = contextFor(signal);
   const resolved = resolveImage(images, slot);
-  if (!resolved) return;
-  const image = new Image();
-  image.fetchPriority = "low";
-  if (resolved.srcSet) {
-    image.sizes = resolved.sizes ?? "";
-    image.srcset = resolved.srcSet;
+  if (!resolved) return Promise.resolve();
+  const key = imageKey(resolved);
+  let entry = prepared.get(key);
+  track("image", "interest", {
+    ...context,
+    cacheHit: !!entry?.settled && entry.expires > Date.now(),
+    foreground: priority,
+  });
+  if (entry?.settled && entry.expires <= Date.now()) {
+    prepared.delete(key);
+    entry = undefined;
   }
-  image.src = resolved.src;
-  return () => {
-    image.removeAttribute("srcset");
-    image.removeAttribute("src");
-  };
+  if (!entry) {
+    for (const [heldKey, held] of prepared)
+      if (held.settled && !held.consumers && (held.expires <= Date.now() || prepared.size >= 128))
+        prepared.delete(heldKey);
+    const image = new Image();
+    const imageTrace = telemetryEnabled ? { traceId: crypto.randomUUID() } : undefined;
+    let downloaded: number | undefined;
+    let outcome = "failed";
+    let finish!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const current: PreparedImage = {
+      image,
+      trace: imageTrace,
+      promise,
+      consumers: 0,
+      settled: false,
+      failed: false,
+      expires: Infinity,
+      cancel: () => {
+        image.removeAttribute("srcset");
+        image.removeAttribute("src");
+        settle(true);
+      },
+    };
+    const settle = (failed: boolean) => {
+      if (current.settled) return;
+      clearTimeout(timeout);
+      image.onload = image.onerror = null;
+      current.settled = true;
+      current.failed = failed;
+      current.expires = Date.now() + (failed ? 30_000 : 60_000);
+      track("image", "prepare", {
+        ...imageTrace,
+        ms: performance.now() - began,
+        downloadMs: downloaded ? downloaded - began : undefined,
+        decodeMs: downloaded ? performance.now() - downloaded : undefined,
+        outcome: failed ? outcome : "success",
+      });
+      finish();
+    };
+    // Failed or stalled artwork gets the normal static fallback at the destination.
+    const timeout = setTimeout(() => {
+      outcome = "timeout";
+      current.cancel();
+    }, 3000);
+    image.onload = () => {
+      downloaded = performance.now();
+      void image.decode().then(
+        () => settle(false),
+        () => settle(true),
+      );
+    };
+    image.onerror = () => settle(true);
+    image.fetchPriority = priority ? "high" : "low";
+    if (resolved.srcSet) {
+      image.sizes = resolved.sizes ?? "";
+      image.srcset = resolved.srcSet;
+    }
+    image.src = resolved.src;
+    prepared.set(key, current);
+    entry = current;
+  }
+  const current = entry;
+  if (priority) current.image.fetchPriority = "high";
+  current.consumers++;
+  return new Promise<void>((resolve, reject) => {
+    const release = () => {
+      signal?.removeEventListener("abort", abort);
+      current.consumers--;
+      if (!current.settled && !current.consumers) {
+        prepared.delete(key);
+        track("image", "cancel", {
+          ...context,
+          workId: current.trace?.traceId,
+          ms: performance.now() - began,
+        });
+        current.cancel();
+      }
+    };
+    const abort = () => {
+      release();
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    void current.promise.then(() => {
+      if (signal?.aborted) return;
+      release();
+      track("image", "wait", {
+        ...context,
+        workId: current.trace?.traceId,
+        ms: performance.now() - began,
+        foreground: priority,
+        failed: current.failed,
+      });
+      resolve();
+    });
+  });
+}
+export function warmImage(images: readonly ImageSource[], slot: ImageSlot | SlotName) {
+  const controller = new AbortController();
+  void prepareImage(images, slot, controller.signal).catch(() => {});
+  return () => controller.abort();
 }

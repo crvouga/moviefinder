@@ -134,12 +134,21 @@ export function stableSerialize(value: unknown): string {
 }
 export type Coverage = {
   state: "missing" | "partial" | "complete" | "stale" | "error";
+  projection?: "viewport";
+  // A previously complete provider page can remain usable when a refresh fails.
+  complete?: boolean;
   fetchedAt: string | null;
   nextCursor: string | null;
   message?: string;
   unsupported: string[];
 };
-export type QueryResult = { id: string; entities: Entity[]; ids: string[]; coverage: Coverage };
+export type QueryResult = {
+  id: string;
+  entities: Entity[];
+  ids: string[];
+  coverage: Coverage;
+  included?: { id: string; ids: string[]; coverage: Coverage }[];
+};
 export type EventEnvelope = {
   protocol: 1;
   id: string;

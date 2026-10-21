@@ -1,3 +1,4 @@
+import { readRows, bottlenecks, traces, formatTraces, formatBottlenecks } from "./telemetry-report";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -15,7 +16,7 @@ type Row = Record<string, string | number | boolean | null | undefined> & {
 const args = process.argv.slice(2);
 const command = args[0] && !args[0].startsWith("-") ? args[0] : "summary";
 const flag = (name: string) => {
-  const i = args.indexOf(`--${name}`);
+  const i = args.findIndex((arg) => arg === `--${name}` || (name === "n" && arg === "-n"));
   return i >= 0 ? args[i + 1] : undefined;
 };
 const directory = process.env.MOVIEFINDER_TELEMETRY_DIR ?? ".local/telemetry";
@@ -27,23 +28,43 @@ if (command === "clear") {
 }
 const unit = { s: 1000, m: 60_000, h: 3_600_000 } as const;
 const since = flag("since")?.match(/^(\d+)([smh])$/);
-const cutoff = since ? Date.now() - Number(since[1]) * unit[since[2] as keyof typeof unit] : 0;
+const cutoff = since
+  ? Date.now() - Number(since[1]) * unit[since[2] as keyof typeof unit]
+  : command === "watch"
+    ? Date.now() - 300_000
+    : 0;
 const text = await readFile(file, "utf8").catch(() => "");
-if (!text) {
+if (!text && command !== "watch") {
   console.error(`No telemetry at ${file}. Start the app with bun run dev and use it first.`);
   process.exit(1);
 }
-const rows = text
-  .split("\n")
-  .filter(Boolean)
-  .flatMap((line) => {
-    try {
-      return [JSON.parse(line) as Row];
-    } catch {
-      return [];
-    }
-  })
-  .filter((row) => Date.parse(row.t) >= cutoff);
+const rows = readRows(text, cutoff);
+if (["bottlenecks", "traces", "watch"].includes(command)) {
+  const show = (items: Row[]) => {
+    const report = command === "traces" ? traces(items, flag("trace")) : bottlenecks(items);
+    console.log(
+      args.includes("--json")
+        ? JSON.stringify(report, null, 2)
+        : command === "traces"
+          ? formatTraces(report as ReturnType<typeof traces>, !!flag("trace"))
+          : formatBottlenecks(report as ReturnType<typeof bottlenecks>),
+    );
+  };
+  show(rows);
+  if (command === "watch") {
+    setInterval(async () => {
+      const recent = readRows(
+        await readFile(file, "utf8").catch(() => ""),
+        Date.now() - (since ? Number(since[1]) * unit[since[2] as keyof typeof unit] : 300_000),
+      );
+      if (process.stdout.isTTY) process.stdout.write("\x1b[2J\x1b[H");
+      show(recent);
+    }, 2000);
+    await new Promise(() => {});
+  }
+  process.exit(0);
+}
+
 const num = (value: unknown) => (typeof value === "number" ? value : 0);
 const percentile = (values: number[], p: number) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -52,7 +73,12 @@ const percentile = (values: number[], p: number) => {
 const r1 = (n: number) => Math.round(n * 10) / 10;
 function group<T>(items: T[], key: (item: T) => string) {
   const map = new Map<string, T[]>();
-  for (const item of items) map.set(key(item), [...(map.get(key(item)) ?? []), item]);
+  for (const item of items) {
+    const id = key(item),
+      held = map.get(id) ?? [];
+    held.push(item);
+    map.set(id, held);
+  }
   return map;
 }
 const stats = (items: Row[]) => {
@@ -62,7 +88,7 @@ const stats = (items: Row[]) => {
     totalMs: r1(ms.reduce((a, b) => a + b, 0)),
     p50: r1(percentile(ms, 50)),
     p95: r1(percentile(ms, 95)),
-    max: r1(Math.max(0, ...ms)),
+    max: r1(ms.reduce((max, ms) => Math.max(max, ms), 0)),
   };
 };
 const table = (items: Row[], key: (r: Row) => string, top = 10) =>
@@ -71,7 +97,7 @@ const table = (items: Row[], key: (r: Row) => string, top = 10) =>
       name,
       ...stats(list),
       ...(list.some((r) => r.bytes != null)
-        ? { maxKB: Math.round(Math.max(...list.map((r) => num(r.bytes))) / 1024) }
+        ? { maxKB: Math.round(list.reduce((max, r) => Math.max(max, num(r.bytes)), 0) / 1024) }
         : {}),
     }))
     .sort((a, b) => b.totalMs - a.totalMs)
@@ -98,7 +124,7 @@ if (command === "slow") {
   process.exit(0);
 }
 // Requests the browser repeated: same route and parameters again after it already had an answer.
-// Each repeat is a round trip, a server query and a parse that changed nothing.
+// Repeated reads can be intentional refreshes; equality alone does not prove wasted work.
 function redundancy() {
   const fetches = only("fetch", "client").filter(
     (r) => !r.failed && r.status === 200 && r.name.startsWith("GET "),
@@ -106,7 +132,8 @@ function redundancy() {
   const seen = new Map<string, number>();
   const repeats = new Map<string, { n: number; kb: number }>();
   for (const r of fetches) {
-    const key = `${r.name}${r.query ? `?${r.query}` : ""}`;
+    if (!r.key) continue; // Old recordings cannot establish identical requests safely.
+    const key = `${r.page}:${r.key}`;
     if (seen.has(key)) {
       const entry = repeats.get(key) ?? { n: 0, kb: 0 };
       entry.n++;
@@ -130,7 +157,7 @@ function redundancy() {
     worst: [...repeats]
       .sort((a, b) => b[1].n - a[1].n)
       .slice(0, 5)
-      .map(([name, e]) => ({ name, extra: e.n })),
+      .map(([key, e]) => ({ key, extra: e.n })),
   };
 }
 const speculative = (r: Row) => r.speculative === true;
@@ -158,8 +185,8 @@ const summary = {
     entities: r.entities,
   })),
   serverRuntime: {
-    loopMaxMs: Math.max(0, ...runtime("server").map((r) => num(r.loopMax))),
-    loopP99Ms: Math.max(0, ...runtime("server").map((r) => num(r.loopP99))),
+    loopMaxMs: runtime("server").reduce((max, r) => Math.max(max, num(r.loopMax)), 0),
+    loopP99Ms: runtime("server").reduce((max, r) => Math.max(max, num(r.loopP99)), 0),
     rssMb: lastOf(runtime("server"), "rssMb"),
   },
   sse: Object.fromEntries(
@@ -170,6 +197,8 @@ const summary = {
     only("fetch", "client"),
     (r) => `${r.name}${r.failed ? ` (${r.failed})` : ""}`,
   ),
+  contentReady: table(only("content", "client"), (r) => String(r.path)),
+  cachedGraphs: table(only("graph", "server"), (r) => r.name),
   clientLoads: {
     speculative: stats(loads.filter(speculative)),
     navigation: stats(loads.filter((r) => !speculative(r))),
@@ -215,7 +244,8 @@ const summary = {
     domNodes: lastOf(runtime("client"), "domNodes"),
     heapMb: lastOf(runtime("client"), "heapMb"),
   },
-  errors: only("error").map((r) => ({ name: r.name, message: r.message })),
+  errors: only("error").map((r) => ({ name: r.name, failed: r.failed })),
+  diagnostics: bottlenecks(rows),
 };
 if (args.includes("--json")) console.log(JSON.stringify(summary, null, 2));
 else {

@@ -1,9 +1,10 @@
+import { bindNavigation } from "../telemetry";
 import { preloadTitles } from "../preloading";
 import { movieGenreIds, tvGenreIds } from "../../shared/genres";
 import { localMatch } from "../../shared/filters";
 import { fieldText } from "../../shared/contracts";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useSearch, useNavigate } from "@tanstack/react-router";
 import { Swiper, SwiperSlide } from "swiper/react";
 import { Keyboard, Mousewheel, Virtual, A11y } from "swiper/modules";
 import type { Swiper as SwiperType } from "swiper";
@@ -110,25 +111,31 @@ const Slide = memo(function Slide({
   );
 });
 export function Discover({ userId }: { userId: string }) {
-  const location = useLocation(),
+  const search = useSearch({ strict: false }),
     navigate = useNavigate();
   const params = useMemo(() => {
-    const result = feedParams.safeParse(
-      Object.fromEntries(new URLSearchParams(location.searchStr)),
-    );
+    const result = feedParams.safeParse(search);
     return result.success ? result.data : feedParams.parse({});
-  }, [location.searchStr]);
+  }, [search]);
   const statuses = useEntities("status"),
     listItems = useEntities("item");
   const key = signature(params),
     queries = useEntities("query"),
     movies = useEntities("movie"),
     series = useEntities("tv"),
-    [displayKey, setDisplayKey] = useState(key),
+    displayKey = key,
     [filters, setFilters] = useState(false),
     [genreSheet, setGenreSheet] = useState(false),
-    [active, setActive] = useState(0),
+    [selection, setSelection] = useState(() => ({
+      key,
+      index: Number(sessionStorage.getItem(`feed-position:${key}`) ?? 0),
+    })),
+    active =
+      selection.key === key
+        ? selection.index
+        : Number(sessionStorage.getItem(`feed-position:${key}`) ?? 0),
     swiper = useRef<SwiperType | null>(null);
+  const setActive = (index: number) => setSelection({ key, index });
   const pages = useMemo(
     () =>
       queries
@@ -195,10 +202,10 @@ export function Discover({ userId }: { userId: string }) {
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     void discover({ ...params, cursor: undefined }, controller.signal)
       .then(() => {
         if (live) {
-          setDisplayKey(key);
           const position = Number(sessionStorage.getItem(`feed-position:${key}`) ?? 0);
           setActive(position);
           swiper.current?.slideTo(position, 0);
@@ -220,12 +227,16 @@ export function Discover({ userId }: { userId: string }) {
     .slice(active, active + 4)
     .map((e) => e.id)
     .join("|");
-  useEffect(() => (nearby ? preloadTitles(nearby.split("|")) : undefined), [nearby]);
+  useEffect(
+    () => (nearby ? preloadTitles(nearby.split("|"), userId) : undefined),
+    [nearby, userId],
+  );
   const approachingEnd = titles.length - active <= 12;
   useEffect(() => {
     if (!approachingEnd || !coverage?.nextCursor || coverage.state !== "complete") return;
     const cursor = coverage.nextCursor;
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     void discover({ ...params, cursor }, controller.signal, true).catch((error) => {
       if (!controller.signal.aborted) report(error);
     });
