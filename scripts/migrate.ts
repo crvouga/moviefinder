@@ -34,22 +34,9 @@ const commands: Record<string, string[]> = {
     "app",
   ],
 };
-// Atlas must never reach out for update checks or telemetry from CI, and a stalled child must fail
-// loudly well before the job timeout instead of hanging after its work is done.
-const WATCHDOG_MS = 5 * 60_000;
 const child = Bun.spawn(["atlas", ...commands[action]!], {
   stdout: "inherit",
   stderr: "inherit",
-  env: {
-    ...process.env,
-    ...(scoped ? { DATABASE_URL: scoped } : {}),
-    ATLAS_NO_UPDATE_NOTIFIER: "1",
-  },
+  env: scoped ? { ...process.env, DATABASE_URL: scoped } : process.env,
 });
-const watchdog = setTimeout(() => {
-  console.error(`atlas ${action} did not exit within ${WATCHDOG_MS / 1000}s; terminating it.`);
-  child.kill("SIGKILL");
-}, WATCHDOG_MS);
-const code = await child.exited;
-clearTimeout(watchdog);
-process.exit(code);
+process.exit(await child.exited);
