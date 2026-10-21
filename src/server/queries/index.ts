@@ -20,6 +20,8 @@ import {
 import { localMatch } from "../../shared/filters";
 export { localMatch } from "../../shared/filters";
 import { metrics } from "../log";
+import { detailTargets, viewportGraph } from "../../shared/detail-graph";
+import { timed, record } from "../telemetry";
 export function defineQuery<P, C, R>(definition: {
   name: string;
   params: z.ZodType<P>;
@@ -186,6 +188,7 @@ export function createQueries(db: Database, sync: Sync) {
         const cached = cache.cached,
           stale = !!cached?.refreshAt && cached.refreshAt.getTime() < Date.now();
         const coverage: Coverage = {
+          complete: cached?.complete === true,
           state: cached?.error
             ? "error"
             : !cached
@@ -251,7 +254,11 @@ export function createQueries(db: Database, sync: Sync) {
     return {
       id: `entity:${id}`,
       entities: [
-        ...(row ? normalizeSource(id, row.payload, row.version) : []),
+        ...(row
+          ? row.projection === "detail"
+            ? normalizeSource(id, row.payload, row.version)
+            : summaryOf(id, row.payload, row.version)
+          : []),
         ...tags.map((tag) => rowEntity("status", tag)),
       ],
       ids: row ? [id] : [],
@@ -274,9 +281,9 @@ export function createQueries(db: Database, sync: Sync) {
     !row || row.projection !== "detail";
   // How long a request may wait for a cold title's hydration before events finish the job.
   const hydrationWait = 2500;
-  // `warm` reads serve a hover or similar hint: they report what is cached and start no upstream
-  // work, so skimming across a grid cannot crowd out the title that is actually opened.
-  const entity = (userId: string, warm = false) =>
+  // Cache-only hints start no provider work. A ready prediction hydrates behind foreground
+  // jobs and waits for its complete graph; the client bounds these high-confidence interests.
+  const entity = (userId: string, warm = false, ready = false) =>
     defineQuery({
       name: "entity",
       params: sourceId,
@@ -290,12 +297,12 @@ export function createQueries(db: Database, sync: Sync) {
       },
       async loadCache(id, cache, signal) {
         const { row } = cache;
-        if (warm) return;
+        if (warm && !ready) return;
         if (!row || row.projection !== "detail" || row.refreshAt.getTime() < Date.now()) {
-          await sync.hydrate(id);
+          await sync.hydrate(id, warm ? 200 : 0);
           // A cold title usually finishes within the provider's round trip, so answer with it
           // here instead of making the browser wait for an event and ask again.
-          if (needsDetail(row) && (await sync.settled(id, hydrationWait, signal)))
+          if (needsDetail(row) && (await sync.settled(id, ready ? 10_000 : hydrationWait, signal)))
             [cache.row] = await db.select().from(sources).where(eq(sources.id, id));
         }
       },
@@ -329,14 +336,85 @@ export function createQueries(db: Database, sync: Sync) {
       ),
     );
   }
+  async function includeCachedGraph(result: QueryResult): Promise<QueryResult> {
+    const primary = result.entities.find((entity) => entity.id === result.ids[0]);
+    if (!primary) return result;
+    const entities = new Map(result.entities.map((entity) => [entity.id, entity]));
+    const targets = detailTargets(primary, (id) => entities.get(id));
+    const ids = [...new Set([...targets.people, ...targets.titles])].filter(
+      (id) => id !== primary.id,
+    );
+    if (!ids.length) return result;
+    return timed("graph", "cache", async () => {
+      // One read for all visible neighbours. No provider work and no recursive traversal.
+      const rows = new Map(
+        (await db.select().from(sources).where(inArray(sources.id, ids))).map((row) => [
+          row.id,
+          row,
+        ]),
+      );
+      // Match the two-destination prediction budget; prefer cached visible people, then titles.
+      const previews = new Set(
+        [...targets.people, ...targets.titles]
+          .filter((id) => rows.get(id)?.projection === "detail")
+          .slice(0, 2),
+      );
+      const included: NonNullable<QueryResult["included"]> = [];
+      for (const id of ids) {
+        const row = rows.get(id);
+        if (!row) continue;
+        const full = previews.has(id) && row.projection === "detail";
+        const graph = full
+          ? viewportGraph(normalizeSource(id, row.payload, row.version), id)
+          : summaryOf(id, row.payload, row.version);
+        for (const entity of graph) {
+          const held = entities.get(entity.id);
+          if (entity.id !== primary.id && (!held || entity.version > held.version))
+            entities.set(entity.id, entity);
+        }
+        if (full)
+          included.push({
+            id: `entity:${id}`,
+            ids: [id],
+            coverage: {
+              state: row.refreshAt.getTime() < Date.now() ? "stale" : "complete",
+              fetchedAt: row.fetchedAt.toISOString(),
+              nextCursor: null,
+              unsupported: [],
+              projection: "viewport",
+            },
+          });
+      }
+      record("graph", "size", { entities: entities.size, count: included.length });
+      return { ...result, entities: [...entities.values()], included };
+    });
+  }
   // Registered definitions retain distinct cache, scheduling, and projection responsibilities.
   const definitions = { discover: discovery, entity };
   return {
     definitions,
-    discover: (input: unknown, userId: string, signal?: AbortSignal) =>
-      definitions.discover(userId).execute(input, signal),
-    entity: (id: string, userId: string, signal?: AbortSignal, warm = false) =>
-      definitions.entity(userId, warm).execute(id, signal),
+    discover: async (input: unknown, userId: string, signal?: AbortSignal, ready = false) => {
+      const query = definitions.discover(userId);
+      const result = await query.execute(input, signal);
+      if (
+        ready &&
+        ["missing", "partial"].includes(result.coverage.state) &&
+        (await sync.settledJob(result.id, 10_000, signal))
+      )
+        return query.execute(input, signal);
+      return result;
+    },
+    entity: async (
+      id: string,
+      userId: string,
+      signal?: AbortSignal,
+      warm = false,
+      ready = false,
+    ) => {
+      const result = await definitions.entity(userId, warm, ready).execute(id, signal);
+      signal?.throwIfAborted();
+      return includeCachedGraph(result);
+    },
     titles,
   };
 }

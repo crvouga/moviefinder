@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from "react";
-import { resolveImage, type ImageSource, type SlotName } from "../images";
+import { currentNavigationContext, track } from "../telemetry";
+import { useMemo, useState, type ReactNode } from "react";
+import { resolveImage, imageUnavailable, type ImageSource, type SlotName } from "../images";
 
 // Hand it every image you have and the slot it fills; it picks the artwork and the resolution.
 export function Image({
@@ -19,7 +20,11 @@ export function Image({
 }) {
   const resolved = resolveImage(images, slot);
   const [failed, setFailed] = useState<string>();
-  if (!resolved || failed === resolved.src) return fallback;
+  const timing = useMemo(
+    () => ({ started: performance.now(), context: currentNavigationContext() }),
+    [resolved?.src],
+  );
+  if (!resolved || failed === resolved.src || imageUnavailable(resolved)) return fallback;
   return (
     <img
       className={className}
@@ -30,6 +35,9 @@ export function Image({
       loading={priority ? "eager" : "lazy"}
       fetchPriority={priority ? "high" : "auto"}
       decoding="async"
+      onLoad={() =>
+        track("image", "display", { ...timing.context, ms: performance.now() - timing.started })
+      }
       onError={() => setFailed(resolved.src)}
     />
   );

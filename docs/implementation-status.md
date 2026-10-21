@@ -97,3 +97,180 @@ Validation and publishing now share `.github/workflows/check.yml`. The three exi
 Verified locally for this change: frozen dependency installation, `actionlint`, formatting/lint/type checking and 30 unit/property tests, production build, Atlas migration validation, 38 isolated embedded PostgreSQL integration tests, schema replay/comparison, the embedded lifecycle test, and 22 mobile/desktop browser tests. PostgreSQL 17 service coverage remains in CI; the local integration run used embedded PostgreSQL. Docker daemon discovery did not respond, so no new container build or runtime smoke is claimed. The updated workflow has not yet run on GitHub.
 
 Publishing remains blocked by the platform-owned dispatch credential and failed foundation environment import documented in [infrastructure](infrastructure.md). No shared resources, credentials, or databases were modified to clear that failure.
+
+## Navigation readiness and preloading follow-up (2026-10-20)
+
+Route loaders now prepare screen modules, canonical data and decoded critical artwork before
+presenting the destination. Discovery/search read committed route parameters, preventing a pending
+URL from applying new filters to the previous page's data. Discovery changes its result identity
+and saved position together. Router-aware lazy components prevent a module-loading fallback on the
+first visit. Cold failures offer a retry instead of presenting incomplete provider coverage; a
+previously complete provider page remains usable when its refresh fails.
+
+Primary navigation, two visible content links and the current/next feed title are prepared in
+advance under a shared three-request speculative budget. Hover waits 350 ms and feed warming waits
+450 ms so rapid movement does not hydrate every card. Press-down uses foreground priority; actual
+navigation joins existing work. Predictions pause during navigation and respect hidden tabs,
+Save-Data and slow connections. Shared image preparation waits for decoding, promotes foreground
+priority and provides static fallbacks for failed/stalled artwork. Collection covers use the same
+item ordering as their view, including collaborator-owned lists. Season preparation includes the
+first episode stills.
+
+Request invalidation during a read prevents its eventual response from becoming fresh again.
+Explicit live-query identities avoid rebuilding query identities on every render, and detail pages
+subscribe only to their own graph. All entities still live in TanStack DB; preloading introduces no
+second entity cache. Durable hydration still belongs to entity-store-sync and retains provider rate
+limits and shared job ownership. No schema migrations or shared infrastructure changes were made.
+
+Verification: `bun run check` passes formatting, lint, native TypeScript and 51 unit/property tests;
+`bun run test:integration` passes 44 isolated embedded PostgreSQL tests. The browser suite passed
+32 desktop/mobile cases, followed by focused runs covering search/discovery query isolation and
+rapid skimming (36 distinct cases in total). Browser checks cover delayed data and decoded artwork,
+back/forward navigation, first-frame filter handoff, speculative request bounds, cancellation,
+Save-Data and preservation of text typed during a pending search. Production builds pass. The
+performance harness now closes its browser/application on failures and captures a failure screenshot
+when Chromium responds.
+
+The completed local `bun run perf --keep` benchmark used synthetic provider data, 4x client CPU
+throttling and blocked remote artwork. Cold person-navigation samples changed from
+635/564/937/551/625 ms (median 625 ms) to 549/505/501/440/665 ms (median 505 ms). Prepared-link samples
+were 241/198/329/283/222 ms (median 241 ms). The full browsing/list/profile run completed without
+application errors. Compared with the earlier, more eager preload policy on the same extended
+scenario, intent launches fell from 160 to 54 and feed warming from 32 to 5. These are local fixture
+measurements; the prepared-navigation phase is additional work relative to the original benchmark,
+so aggregate long-task totals are not a direct before/after comparison.
+
+No live-provider, production or physical-handset latency claim is made. Cold network/provider misses
+can still take time; the complete current screen remains visible while the next route prepares.
+
+## Local end-to-end performance diagnostics
+
+Local development now correlates navigation preparation with pooled work, API response headers,
+body parsing, canonical collection commits, PostgreSQL queries and connection acquisition, durable
+worker queue/execution/waiting, and provider calls. Critical artwork has separate download/decode
+and consumer-wait events. Rendering, browser performance entries, SSE, memory and event-loop samples
+remain available alongside these traces. Pooled reads and images have independent work contexts;
+links follow producers without attributing another consumer's navigation to the current one.
+Previously completed shared work is labeled explicitly. These timings overlap and cannot be added
+into a critical path; the paint marker records a rendering opportunity, not pixel completeness.
+
+`bun run telemetry watch --since 5m` supplies a live compact report while browsing. `bottlenecks`,
+`traces --trace UUID`, `slow`, `tail` and JSON output support detailed investigation, including
+request traces for commands. The reader handles out-of-order uploads, truncated lines and large
+sessions. Request equality uses opaque per-page identifiers rather than filter names.
+
+A shared allowlist removes private paths, search text, entity/user IDs, arbitrary error messages and
+SQL literals before buffering or persistence. SQL records contain operation/table shapes. Browser
+uploads are bounded below 48 KB and retry failures; buffers, file rotation and dropped-event counters
+are bounded. Server timings exclude diagnostic uploads themselves and never clone response bodies.
+Production refuses telemetry configuration and does not install browser instrumentation.
+
+Validation: formatting, lint, native TypeScript and 61 unit/property tests pass, including concurrent
+trace isolation, shared-producer direction, privacy and a 150,000-event report. The 44 isolated
+PostgreSQL integration tests and 38 production browser cases pass. Two additional desktop/mobile
+observability cases run the actual Vite client through authentication, cold navigation, commands,
+SQL, workers and a delayed provider fixture into a telemetry file and CLI report. They also check
+private browser counters/buffers, redaction, preload cancellation, bounded batches and retry recovery.
+
+The full isolated performance run completed with 33,766 events, coverage of all instrumented layers,
+zero sampled dropped events, no uncaught application errors and a final browser heap of 93 MB.
+With synthetic providers and 4x CPU throttling, cold person samples were 542/369/448/477/392 ms
+(median 448 ms), and prepared-link samples were 149/148/204/183/210 ms (median 183 ms). The slowest
+recorded navigation's next rendering opportunity was about 1,481 ms; its title API took about
+1,216 ms and its nested hydration wait about 1,195 ms. Those nested timings identify server-side
+hydration waiting on that path; they are not additive or a claim about live-provider latency.
+
+## Immediate navigation with progressive destination content
+
+Navigation now prioritizes screen changes over complete data and artwork. This supersedes the
+complete-destination boundary described above. All route components and the navigation shell load
+before the app becomes interactive. Routes have no asynchronous data/readiness/image loaders;
+clicks, browser back/forward and filter/search URL changes commit independently of those requests.
+Pages use canonical cached data immediately and fetch missing projections in background effects.
+A cold detail destination has a static structural placeholder and a retry after a failed read.
+Detail destinations commit a lightweight cached heading/artwork before mounting their larger live
+graph, with enrichment scheduled after the first frame through an interruptible React transition.
+Background prediction, deduplication, bounded request concurrency and source coverage remain intact.
+
+Navigation telemetry now measures destination opening separately from background enrichment.
+Page-owned request signals retain the navigation context after route resolution, including the
+API, PostgreSQL, worker, provider, parse and merge stages. Native image completion is recorded as
+`image.display`. The performance harness reports click-to-destination paint opportunity separately
+from click-to-filmography; neither marker claims complete pixels or live-provider latency.
+
+Validation: native TypeScript, lint, formatting and all 61 unit/property tests pass. All 40 production
+browser cases and both desktop/mobile observability cases pass. Regression tests hold API responses
+and artwork indefinitely while checking destination rendering, cached summaries, browser back/forward,
+all primary routes without further screen scripts, and immediate filter changes. Observability also
+asserts that a cold destination records a paint opportunity before its API response is released.
+
+The completed isolated synthetic benchmark at 4x CPU throttling measured cold detail destination
+paint opportunities at 37/40/31/30/29 ms (median 31 ms), and prepared destinations at
+31/33/33/32/34 ms (median 33 ms). Filmography appeared later: cold samples were
+271/258/214/186/205 ms and prepared samples 132/248/209/201/232 ms. The broader browsing, list,
+activity and profile run completed with 28,598 events, all instrumented-layer coverage, zero sampled
+telemetry drops, no uncaught application errors and a final browser heap of 87 MB. Its slowest
+recorded navigation paint opportunity was about 80 ms. These synthetic rendering-opportunity
+measurements do not establish pixel completeness, physical-device or live-provider latency guarantees.
+
+## Reducing partial destination data
+
+Navigation remains independent of data readiness. Title responses now include cached first-screen
+neighbour graphs: summaries for up to eight visible people and eight related titles, plus at most
+two cached detail previews, preferring visible people. Person previews contain at most 24 filmography
+titles. One bounded SQL read supplies these cached neighbours without recursive expansion or extra
+provider hydration. `coverage.projection` and `data.graphScope` explicitly distinguish a viewport
+preview from a full graph. Cache-only reads of summary source rows remain summaries and cannot
+claim a detail graph is loaded. Raw provider JSON remains intact.
+
+Known artwork starts alongside HTTP, and response artwork starts before collection commits. The
+image budget is 24 interests per bundle; secondary previews warm lead artwork only. Detail reads
+start with the destination's first commit, before the deferred large view mounts. Live-query startup
+uses canonical collection rows when available to avoid empty initial cast/genre/card results.
+Summary normalization no longer builds and discards an entire relation graph. Source graph-version
+metadata permits same-version preview-to-full upgrades, preserves newer details, and skips duplicate
+full/preview writes. Query metadata and SSE pool invalidation also avoid repeating already loaded
+source versions. Failed partial detail reads retain visible content and offer retry.
+
+Worker priorities distinguish foreground reads, intent preparation and background warming in durable
+job parameters. The worker claims one job at a time, drains due work without idle poll gaps, and
+checks the next pending deadline so later delayed interests are not missed after the first wake.
+Retry deadlines and provider pacing are preserved. An experimental client index was removed after
+it failed to improve this workload; it is not part of the final change.
+
+`content.ready` and trace `contentMs` measure first-screen data independently from route paint and
+image completion. Cached graph SQL and entity counts are recorded. Telemetry now drains successful
+bursts in batches of at most 200 events below 48 KB, yielding 50 ms between batches with one upload
+in flight. Failed uploads keep the normal retry cadence. Browser tests verify that an 800-event
+burst recovers automatically after a failed upload without manual flushing.
+
+Validation: native TypeScript, lint, formatting and 67 unit/property tests pass; 49 isolated database
+integration tests, 40 production browser cases and both desktop/mobile observability cases pass.
+Regression tests hold a person's direct detail response and artwork while its first-screen graph
+renders from the parent movie response, verify back/forward, and check that a viewport graph later
+upgrades to full detail. Integration cases cover bounded graph inclusion, no recursive provider work,
+source-version upgrades, foreground priority, delayed wake-ups, retry deadlines and honest summaries.
+
+The final full isolated synthetic run at 4x CPU throttling completed with 35,302 events, all
+instrumented-layer coverage, zero sampled telemetry drops, no uncaught application errors and a
+final browser heap of 65 MB. The cached-neighbour scenario opened its destination at the next paint
+opportunity in 54 ms and displayed filmography in 558 ms while direct person responses remained
+blocked. Cold destination paint samples were 51/46/105/88/63 ms; prepared samples were
+90/190/59/68/125 ms. The host was busy during this run: registration took 15.1 seconds versus 2.8
+seconds in the earlier baseline. These timings are diagnostic, not a controlled speedup comparison
+or a live-provider, complete-pixel, or device latency guarantee. The blocked-response regression is
+the direct evidence that cached graphs reduce missing visible data independently of request latency.
+
+The Add to list drawer now creates lists with an inline form instead of `window.prompt`, which
+blocks page execution while open. Picker membership, title counts and duplicate checks use a
+memoized view of the canonical collections prepared by the viewer provider, avoiding new live
+queries and repeated full-item scans on opening. Large pickers reveal 48 lists at a time. The
+shared list-item index also builds groups without repeatedly copying growing arrays.
+
+Validation: the new regression first failed against the previous implementation because it opened
+a native prompt. It now passes on mobile and desktop, covering typing, keyboard submission,
+creation, saved membership, Escape, closing, reopening and interaction after dismissal on both
+discovery and detail pages. Native TypeScript, lint, formatting and all 67 unit tests pass. The
+focused development performance run completed six open/type/close cycles with and without saved
+lists, no application errors, and 13–33 ms next-frame opportunities while editing at 4x CPU
+throttling. Those frame measurements exclude opening latency and simulated typing duration.

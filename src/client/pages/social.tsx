@@ -1,3 +1,4 @@
+import { bindNavigation } from "../telemetry";
 import { loadSocial } from "../state";
 import { fieldText } from "../../shared/contracts";
 import { useEffect, useMemo, useState } from "react";
@@ -151,6 +152,7 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
       | undefined;
   useEffect(() => {
     const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
     void loadSocial("profile", userId, undefined, controller.signal).catch((error) => {
       if (!controller.signal.aborted) report(error);
     });

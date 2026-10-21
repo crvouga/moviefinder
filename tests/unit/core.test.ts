@@ -283,7 +283,15 @@ describe("database failures", () => {
         .mockRejectedValue(
           Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
         ),
-      worker = createSync({ transaction } as unknown as Database, async () => ({}));
+      worker = createSync(
+        {
+          transaction,
+          select: () => ({
+            from: () => ({ where: () => ({ orderBy: () => ({ limit: async () => [] }) }) }),
+          }),
+        } as unknown as Database,
+        async () => ({}),
+      );
     try {
       await worker.tick();
       expect(transaction).toHaveBeenCalledTimes(1);

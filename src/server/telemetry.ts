@@ -1,6 +1,8 @@
 import { appendFileSync, mkdirSync, renameSync, statSync, existsSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { join } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { safeFields, safeName, safeKind, type TraceContext } from "../shared/telemetry";
 
 export type TelemetryFields = Record<string, string | number | boolean | null | undefined>;
 export type TelemetryEvent = TelemetryFields & {
@@ -13,14 +15,43 @@ const maxFileBytes = 20 * 1024 * 1024,
   ringSize = 5000;
 let directory: string | undefined;
 let pending: string[] = [];
+let dropped = 0,
+  writeFailures = 0;
 let flushTimer: ReturnType<typeof setInterval> | undefined;
 let sampler: ReturnType<typeof setInterval> | undefined;
+let delayMonitor: ReturnType<typeof monitorEventLoopDelay> | undefined;
+const context = new AsyncLocalStorage<TraceContext>();
+const muted = new AsyncLocalStorage<boolean>();
+export function withoutServerTelemetry<T>(work: () => T): T {
+  return muted.run(true, work);
+}
+export const traceContext = () => (telemetryEnabled() ? context.getStore() : undefined);
+export function inTrace<T>(trace: TraceContext, work: () => T): T {
+  return telemetryEnabled() ? context.run(trace, work) : work();
+}
+export function background<T>(work: () => T): T {
+  return telemetryEnabled() ? context.run({ traceId: crypto.randomUUID() }, work) : work();
+}
+const handles = new Map<string, string>();
+export function forgetTelemetryKey(key: string) {
+  handles.delete(key);
+}
+export function telemetryKey(key: string) {
+  if (!telemetryEnabled()) return undefined;
+  let value = handles.get(key);
+  if (!value) {
+    if (handles.size >= 5000) handles.delete(handles.keys().next().value!);
+    value = crypto.randomUUID();
+    handles.set(key, value);
+  }
+  return value;
+}
 const ring: TelemetryEvent[] = [];
 
 // Local development diagnostics only. Never configured in production; it records timings,
-// route names, and SQL text, but never request bodies, headers, cookies, or SQL parameters.
+// route templates, and SQL operation/table shapes, but never request bodies, headers, cookies, or SQL parameters.
 export function telemetryEnabled() {
-  return directory !== undefined;
+  return directory !== undefined && !muted.getStore();
 }
 export function telemetryFile() {
   return directory ? join(directory, "events.ndjson") : undefined;
@@ -35,6 +66,7 @@ export function configureTelemetry(target: string | undefined) {
   flushTimer = setInterval(flushTelemetry, 500);
   flushTimer.unref();
   const delay = monitorEventLoopDelay({ resolution: 10 });
+  delayMonitor = delay;
   delay.enable();
   sampler = setInterval(() => {
     const memory = process.memoryUsage();
@@ -44,6 +76,9 @@ export function configureTelemetry(target: string | undefined) {
       loopMax: round(delay.max / 1e6),
       rssMb: Math.round(memory.rss / 1048576),
       heapMb: Math.round(memory.heapUsed / 1048576),
+      dropped,
+      retries: writeFailures,
+      buffered: pending.length,
     });
     delay.reset();
   }, 5000);
@@ -53,9 +88,14 @@ export function stopTelemetry() {
   if (flushTimer) clearInterval(flushTimer);
   if (sampler) clearInterval(sampler);
   flushTimer = sampler = undefined;
+  delayMonitor?.disable();
+  delayMonitor = undefined;
+  handles.clear();
   flushTelemetry();
   directory = undefined;
   ring.length = 0;
+  pending = [];
+  dropped = writeFailures = 0;
 }
 const round = (value: number) => Math.round(value * 10) / 10;
 export function record(
@@ -65,17 +105,21 @@ export function record(
   source: "server" | "client" = "server",
   at?: string,
 ) {
-  if (!directory) return;
+  if (!directory || (source === "server" && muted.getStore())) return;
   const event: TelemetryEvent = {
-    t: at ?? new Date().toISOString(),
+    t:
+      at && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at)
+        ? at
+        : new Date().toISOString(),
     source,
-    kind,
-    name,
-    ...fields,
+    kind: safeKind(kind),
+    name: safeName(kind, name),
+    ...safeFields({ ...(source === "server" ? traceContext() : {}), ...fields }),
   };
   ring.push(event);
   if (ring.length > ringSize) ring.splice(0, ring.length - ringSize);
-  pending.push(JSON.stringify(event));
+  if (pending.length < 5000) pending.push(JSON.stringify(event));
+  else dropped++;
 }
 export function recentTelemetry() {
   return [...ring];
@@ -88,7 +132,8 @@ export function flushTelemetry() {
       renameSync(file, join(directory, "events.previous.ndjson"));
     appendFileSync(file, pending.join("\n") + "\n", { mode: 0o600 });
   } catch {
-    // Diagnostics must never affect the application.
+    writeFailures++;
+    return; // Retain the bounded batch for a later flush.
   }
   pending = [];
 }
@@ -98,10 +143,24 @@ export async function timed<T>(
   work: () => Promise<T>,
   fields: TelemetryFields = {},
 ) {
-  const start = performance.now();
-  try {
-    return await work();
-  } finally {
-    record(kind, name, { ...fields, ms: round(performance.now() - start) });
-  }
+  if (!telemetryEnabled()) return work();
+  const parent = traceContext();
+  const trace = {
+    traceId: parent?.traceId ?? crypto.randomUUID(),
+    requestId: parent?.requestId,
+    parentId: parent?.spanId,
+    spanId: crypto.randomUUID(),
+  };
+  return inTrace(trace, async () => {
+    const start = performance.now();
+    let failed = false;
+    try {
+      return await work();
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      record(kind, name, { ...fields, failed, ms: round(performance.now() - start) });
+    }
+  });
 }

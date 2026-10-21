@@ -1,5 +1,5 @@
 import { fieldText } from "../../shared/contracts";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Film,
@@ -14,12 +14,12 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 import type { Entity } from "../../shared/contracts";
-import { useEntities, send, report } from "../state";
+import { send, report } from "../state";
 import { entityImages, type SlotName } from "../images";
 import { Image } from "./image";
 import { Button } from "./ui/button";
 import { Sheet } from "./ui/dialog";
-import { useViewerStatus } from "./viewer";
+import { useSaveLists, useViewerStatus } from "./viewer";
 export const titleHref = (id: string) => `/title/${encodeURIComponent(id)}`;
 export function Poster({
   entity,
@@ -201,7 +201,7 @@ export function AddToList({
     </Sheet>
   );
 }
-// Mounted only while the sheet is open, so closed cards hold no live queries.
+// The shared derived picker view is already ready when the sheet opens.
 function ListPicker({
   entity,
   userId,
@@ -211,16 +211,20 @@ function ListPicker({
   userId: string;
   setOpen: (v: boolean) => void;
 }) {
-  const lists = useEntities("list"),
-    members = useEntities("collaborator"),
-    items = useEntities("item");
-  const editable = lists.filter((l) =>
-    members.some((m) => m.data.listId === l.id && m.data.userId === userId),
-  );
+  const editable = useSaveLists();
+  const paging = usePaging(entity.id);
+  const [creating, setCreating] = useState(false),
+    [name, setName] = useState(""),
+    [saving, setSaving] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const createdList = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (creating) input.current?.focus();
+  }, [creating]);
   return (
     <div className="sheet-body list-picker">
-      {editable.map((list) => {
-        const exists = items.some((i) => i.data.listId === list.id && i.data.titleId === entity.id);
+      {editable.slice(0, paging.shown).map(({ list, titleIds, count }) => {
+        const exists = titleIds.has(entity.id);
         return (
           <button
             key={list.id}
@@ -236,30 +240,64 @@ function ListPicker({
             </span>
             <span>
               {list.title}
-              <small>{items.filter((i) => i.data.listId === list.id).length} titles</small>
+              <small>{count} titles</small>
             </span>
             {exists ? <Check /> : <Plus />}
           </button>
         );
       })}
-      <Button
-        variant="outline"
-        onClick={() => {
-          const title = window.prompt("Name your new list");
-          if (title)
-            void send({ type: "list.create", title, description: "" }, userId)
-              .then(async (result) => {
-                const list = result.entities.find((e) => e.kind === "list");
-                if (list)
-                  await send({ type: "list.add", listId: list.id, titleId: entity.id }, userId);
-                setOpen(false);
-              })
-              .catch(report);
-        }}
-      >
-        <Plus size={16} />
-        Create a list
-      </Button>
+      <ShowMore total={editable.length} paging={paging} />
+      {creating ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (saving || !name.trim()) return;
+            setSaving(true);
+            void (async () => {
+              if (!createdList.current) {
+                const result = await send(
+                  { type: "list.create", title: name.trim(), description: "" },
+                  userId,
+                );
+                createdList.current = result.entities.find((e) => e.kind === "list")?.id;
+              }
+              if (!createdList.current) throw new Error("The list could not be created.");
+              await send(
+                { type: "list.add", listId: createdList.current, titleId: entity.id },
+                userId,
+              );
+              setOpen(false);
+            })()
+              .catch(report)
+              .finally(() => setSaving(false));
+          }}
+        >
+          <label>
+            List name
+            <input
+              ref={input}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              required
+              maxLength={120}
+              readOnly={saving || !!createdList.current}
+            />
+          </label>
+          <div className="sheet-actions">
+            <Button type="submit" disabled={saving || !name.trim()}>
+              Create and add
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button variant="outline" onClick={() => setCreating(true)}>
+          <Plus size={16} />
+          Create a list
+        </Button>
+      )}
     </div>
   );
 }

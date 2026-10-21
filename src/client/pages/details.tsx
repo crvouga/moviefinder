@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { bindNavigation, currentNavigationContext, markNavigationContent } from "../telemetry";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { ArrowLeft, Star, Play, ArrowUpRight, Calendar, Clock } from "lucide-react";
-import { useEntity, useEntities, loadEntity, subscribeEntity, report } from "../state";
+import { useEntity, useEntities, loadEntity, subscribeEntity, getEntity, report } from "../state";
 import { Poster, Tags, TitleCard, External, ShowMore, usePaging } from "../components/common";
 import { Image } from "../components/image";
 import { entityImages } from "../images";
@@ -15,30 +16,107 @@ const records = (value: unknown): Record<string, unknown>[] =>
     : [];
 const ids = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+// Commit a lightweight destination before mounting its potentially large live graph. The
+// second frame schedules interruptible enrichment, so even a warm 300-credit page opens first.
 export function DetailPage({ userId }: { userId: string }) {
-  const [filmographyTab, setFilmographyTab] = useState("all");
-
-  const { id } = useParams({ strict: false }) as { id: string },
-    entity = useEntity(id),
-    router = useRouter(),
-    people = useEntities("person"),
-    credits = useEntities("credit"),
-    genres = useEntities("genre"),
-    movies = useEntities("movie"),
-    series = useEntities("tv"),
-    seasons = useEntities("season"),
-    episodes = useEntities("episode");
+  const { id } = useParams({ strict: false }) as { id: string };
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  // Start the read before mounting live graph queries, while the destination preview paints.
   useEffect(() => {
-    const c = new AbortController();
-    void loadEntity(id, c.signal).catch((error) => {
-      if (!c.signal.aborted) report(error);
+    const controller = new AbortController();
+    bindNavigation(controller.signal, window.location.href);
+    setFailed(false);
+    void loadEntity(id, controller.signal).catch((error) => {
+      if (!controller.signal.aborted) {
+        setFailed(true);
+        report(error);
+      }
     });
     const unsubscribe = subscribeEntity(id);
     return () => {
-      c.abort();
+      controller.abort();
       unsubscribe();
     };
-  }, [id]);
+  }, [id, attempt]);
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => startTransition(() => setReady(true)));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, []);
+  if (ready)
+    return (
+      <DetailContent
+        userId={userId}
+        failed={failed}
+        retry={() => setAttempt((value) => value + 1)}
+      />
+    );
+  const entity = getEntity(id);
+  return (
+    <div className="detail-page" data-title-id={id}>
+      <Button
+        className="back-button"
+        variant="ghost"
+        onClick={() =>
+          router.history.length > 1 ? router.history.back() : router.navigate({ to: "/" })
+        }
+      >
+        <ArrowLeft size={17} /> Back to the good stuff
+      </Button>
+      <section className={entity ? "detail-hero" : "detail-skeleton"} aria-busy="true">
+        {entity ? (
+          <Poster entity={entity} slot="hero" priority />
+        ) : (
+          <div className="skeleton-poster" />
+        )}
+        <div className="detail-intro">
+          <h1>
+            {entity?.title ?? (id.startsWith("tmdb:person:") ? "Person details" : "Title details")}
+          </h1>
+          {entity?.overview ? (
+            <p className="synopsis">{entity.overview}</p>
+          ) : (
+            <div className="skeleton-line wide" />
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+function DetailContent({
+  userId,
+  failed,
+  retry,
+}: {
+  userId: string;
+  failed: boolean;
+  retry: () => void;
+}) {
+  const [filmographyTab, setFilmographyTab] = useState("all");
+  const { id } = useParams({ strict: false }) as { id: string },
+    entity = useEntity(id) ?? getEntity(id),
+    router = useRouter(),
+    credits = useEntities("credit", [
+      ...ids(entity?.data.credits),
+      ...ids(entity?.data.filmographyCredits),
+    ]),
+    people = useEntities(
+      "person",
+      credits.map((credit) => text(credit.data.personId)),
+    ),
+    genres = useEntities("genre", entity?.genres ?? []),
+    movies = useEntities("movie", entity?.related ?? []),
+    series = useEntities("tv", entity?.related ?? []),
+    seasons = useEntities("season", ids(entity?.data.seasons)),
+    episodes = useEntities("episode", ids(entity?.data.episodes));
   // Index each collection once per change; the page reads these by id many times per render.
   const byId = useMemo(
       () =>
@@ -58,21 +136,55 @@ export function DetailPage({ userId }: { userId: string }) {
       }
     return map;
   }, [credits, entity?.data.filmographyCredits]);
+  const paging = usePaging(`${id}|${filmographyTab}`, 24);
+  const visibleReady =
+    !!entity &&
+    entity.data.summary !== true &&
+    entity.data.graphVersion !== undefined &&
+    ids(entity.data.credits)
+      .slice(0, 8)
+      .every((key) => {
+        const credit = creditsById.get(key);
+        return !!credit && !!byId.get(text(credit.data.personId));
+      }) &&
+    ids(entity.data.seasons)
+      .slice(0, 4)
+      .every((key) => byId.has(key)) &&
+    ids(entity.data.episodes)
+      .slice(0, 4)
+      .every((key) => byId.has(key)) &&
+    [
+      ...new Set(
+        Object.values((entity.data.relations ?? {}) as Record<string, unknown>).flatMap(ids),
+      ),
+    ]
+      .slice(0, 8)
+      .every((key) => byId.has(key));
+  const context = currentNavigationContext();
+  useEffect(() => {
+    if (!visibleReady) return;
+    const frame = requestAnimationFrame(() => markNavigationContent(context));
+    return () => cancelAnimationFrame(frame);
+  }, [visibleReady, context?.traceId]);
   if (!entity)
     return (
-      <div className="detail-page">
+      <div className="detail-page" data-title-id={id}>
         <Button variant="ghost" onClick={() => router.history.back()}>
           <ArrowLeft size={16} />
           Back
         </Button>
-        <div className="detail-skeleton">
+        <div className="detail-skeleton" aria-busy={!failed}>
           <div className="skeleton-poster" />
           <div>
+            <h1>{id.startsWith("tmdb:person:") ? "Person details" : "Title details"}</h1>
             <div className="skeleton-line wide" />
             <div className="skeleton-line" />
-            <p>
-              Gathering the story, cast, and little details. They’ll appear here as they arrive.
+            <p role="status">
+              {failed
+                ? "These details couldn’t be fetched. You can try again."
+                : "Gathering the story, cast, and little details. They’ll appear here as they arrive."}
             </p>
+            {failed && <Button onClick={retry}>Try again</Button>}
           </div>
         </div>
       </div>
@@ -92,7 +204,6 @@ export function DetailPage({ userId }: { userId: string }) {
     ]
       .map((i) => byId.get(i))
       .filter((e): e is Entity => !!e);
-  const paging = usePaging(`${id}|${filmographyTab}`, 24);
   const visibleRelated = related.filter(
     (e) =>
       !person ||
@@ -104,10 +215,21 @@ export function DetailPage({ userId }: { userId: string }) {
       ),
   );
   return (
-    <div className="detail-page">
+    <div
+      className="detail-page"
+      data-title-id={id}
+      data-content-ready={visibleReady ? "true" : "false"}
+      data-graph-scope={
+        entity.data.graphScope === "viewport"
+          ? "viewport"
+          : entity.data.summary
+            ? "summary"
+            : "full"
+      }
+    >
       {entity.backdrop && (
         <div className="detail-backdrop">
-          <Image images={entityImages(entity)} slot="backdrop" />
+          <Image images={entityImages(entity)} slot="backdrop" priority />
         </div>
       )}
       <Button
@@ -206,6 +328,18 @@ export function DetailPage({ userId }: { userId: string }) {
           </div>
         </div>
       </section>
+      {(entity.data.graphScope === "viewport" || entity.data.summary === true) && (
+        <p className="muted" role="status">
+          {failed
+            ? "Some details couldn’t be fetched."
+            : "More details will appear here as they arrive."}
+          {failed && (
+            <Button variant="ghost" onClick={retry}>
+              Try again
+            </Button>
+          )}
+        </p>
+      )}
       {records(entity.data.videos).length > 0 && (
         <section className="detail-section">
           <h2>Get a little taste.</h2>

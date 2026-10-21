@@ -1,10 +1,27 @@
 import { RequestPool } from "./request-pool";
+import { mergeEntity } from "../shared/detail-graph";
+import { prepareGraphArtwork } from "./graph-artwork";
 import { createOutbox } from "./outbox";
-import { track, measure, span, count, gauge } from "./telemetry";
+import {
+  track,
+  measure,
+  span,
+  count,
+  gauge,
+  contextFor,
+  bindContext,
+  telemetryKey,
+} from "./telemetry";
 const outbox = createOutbox(window.localStorage);
 const itemAliases = new Map<string, string>();
 import { fieldText } from "../shared/contracts";
-import { createCollection, createOptimisticAction, useLiveQuery } from "@tanstack/react-db";
+import {
+  createCollection,
+  createOptimisticAction,
+  useLiveQuery,
+  eq,
+  inArray,
+} from "@tanstack/react-db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { QueryClient } from "@tanstack/react-query";
 import { hc } from "hono/client";
@@ -34,7 +51,14 @@ export async function readResponse<T>(res: Pick<Response, "ok" | "status" | "jso
   }
   let data;
   try {
-    data = await res.json();
+    data = await span("parse", "body", () => res.json(), contextFor(res));
+    if (data && typeof data === "object") {
+      bindContext(data, contextFor(res));
+      if (Array.isArray(data.entities)) bindContext(data.entities, contextFor(res));
+      if (Array.isArray(data.results))
+        for (const result of data.results)
+          if (Array.isArray(result.entities)) bindContext(result.entities, contextFor(res));
+    }
   } catch {
     throw new Error("We couldn’t reach MovieFinder. Try again shortly.");
   }
@@ -88,7 +112,7 @@ export const collections = Object.fromEntries(
 gauge(() => Object.fromEntries(kinds.map((kind) => [`n_${kind}`, collections[kind].size])));
 const versions = new Map<string, number>();
 let loaded: Promise<unknown> | undefined;
-const collectionsReady = () =>
+export const collectionsReady = () =>
   (loaded ??= Promise.all(Object.values(collections).map((c) => c.preload())).catch((error) => {
     loaded = undefined;
     throw error;
@@ -99,22 +123,10 @@ function applyMerge(entities: Entity[]) {
   const groups = new Map<Kind, Entity[]>();
   for (const e of entities) {
     const key = `${e.kind}:${e.id}`;
-    const known = versions.get(key) ?? -1,
-      held = collections[e.kind].get(e.id),
-      summary = e.data.summary === true;
-    if (e.version < known) continue;
-    // A summary (feeds, snapshot, events) never repeats a version the collection already has and
-    // never discards relations loaded by the detail view. Detail entities always apply.
-    if (summary && held && e.version === known) continue;
+    const known = versions.get(key) ?? -1;
+    const next = mergeEntity(collections[e.kind].get(e.id), e, known);
+    if (!next) continue;
     versions.set(key, e.version);
-    const next =
-      summary && held
-        ? {
-            ...e,
-            related: held.related,
-            data: { ...held.data, ...e.data, summary: held.data.summary },
-          }
-        : e;
     const group = groups.get(e.kind) ?? [];
     group.push(next);
     groups.set(e.kind, group);
@@ -148,6 +160,7 @@ async function commit(change: {
   removed?: { kind: Kind; id: string }[];
   query?: QueryRow | QueryRow[];
 }) {
+  const began = performance.now();
   await collectionsReady();
   const queries = change.query ? [change.query].flat() : [];
   await Promise.all([
@@ -155,11 +168,29 @@ async function commit(change: {
     ...applyRemove(change.removed ?? []),
     ...(queries.length ? [collections.query.utils.writeUpsert(queries)] : []),
   ]);
+  track("merge", "commit", {
+    ...contextFor(change.entities),
+    ms: performance.now() - began,
+    entities: change.entities?.length ?? 0,
+  });
 }
 export const merge = (entities: Entity[]) => commit({ entities });
-export function useEntities(kind: Kind) {
+export function useEntities(kind: Kind, ids?: readonly string[]) {
   count(`render.useEntities.${kind}`);
-  const result = useLiveQuery({ query: (q) => q.from({ entity: collections[kind] }) });
+  const result = useLiveQuery({
+    queryKey: ["entity-view", kind, ids ? ids.join("|") : "all"],
+    query: (q) =>
+      ids
+        ? q.from({ entity: collections[kind] }).where(({ entity }) => inArray(entity.id, [...ids]))
+        : q.from({ entity: collections[kind] }),
+  });
+  // A live query establishes its subscription asynchronously. Read the same canonical rows
+  // during that first render instead of flashing empty cast/genres/cards in a prepared graph.
+  if (ids && !result.isReady)
+    return ids.flatMap((id) => {
+      const entity = collections[kind].get(id);
+      return entity ? [entity] : [];
+    });
   return (result.data ?? []) as Entity[];
 }
 export function useEntity(id: string | undefined) {
@@ -170,8 +201,12 @@ export function useEntity(id: string | undefined) {
       : id?.startsWith("tmdb:")
         ? (id.split(":")[1] as Kind)
         : "movie";
-  const rows = useEntities(kind);
-  return rows.find((e) => e.id === id);
+  const result = useLiveQuery({
+    queryKey: ["single-entity", kind, id ?? ""],
+    query: (q) =>
+      q.from({ entity: collections[kind] }).where(({ entity }) => eq(entity.id, id ?? "")),
+  });
+  return result.isReady ? result.data?.[0] : collections[kind].get(id ?? "");
 }
 export function getEntity(id: string) {
   for (const c of Object.values(collections)) {
@@ -199,7 +234,10 @@ export function encodeParams(p: FeedParams): Record<string, string> {
   );
 }
 export const requests = new RequestPool<string | null>(3, (event, fields) =>
-  track("pool", event, fields),
+  track("pool", event, {
+    ...fields,
+    key: typeof fields.key === "string" ? telemetryKey(fields.key) : undefined,
+  }),
 );
 // Cached reads are dropped precisely when an event or command says they changed (see
 // `staleKeys`), so a result can be trusted for a while. Incomplete ones are still followed live.
@@ -223,22 +261,32 @@ export function discover(
   params: FeedParams,
   signal?: AbortSignal,
   speculative = false,
+  ready = false,
 ): Promise<string> {
   let id = "";
   return requests.run(
     `discover:${stableSerialize(params)}`,
     async (sharedSignal) => {
-      id = await span("load", "discover", () => readDiscovery(params, sharedSignal), {
+      id = await span("load", "discover", () => readDiscovery(params, sharedSignal, ready), {
         speculative,
+        ...contextFor(sharedSignal),
       });
       return id;
     },
-    { signal, speculative, ttl: () => queryTTL(id) },
+    {
+      signal,
+      speculative,
+      ttl: () => queryTTL(id),
+      fresh: ready ? (id) => !!id && queryReady(id) : undefined,
+    },
   ) as Promise<string>;
 }
-async function readDiscovery(params: FeedParams, signal: AbortSignal) {
+async function readDiscovery(params: FeedParams, signal: AbortSignal, ready = false) {
   const result = await readResponse<QueryResult>(
-    await api.api.discover.$get({ query: encodeParams(params) }, { init: { signal } }),
+    await api.api.discover.$get(
+      { query: { ...encodeParams(params), ...(ready ? { ready: "1" as const } : {}) } },
+      { init: { signal } },
+    ),
   );
   signal.throwIfAborted();
   await commit({
@@ -263,6 +311,12 @@ function refetchSoon(id: string) {
       refetches.delete(id);
       const sub = subscriptions.get(id);
       if (!sub) return;
+      // The hydration response may already have committed the version announced by SSE.
+      // Don't read/merge the identical graph again 300 ms later.
+      if (id.startsWith("entity:")) {
+        const entity = getEntity(id.slice("entity:".length));
+        if (entity && hydrated(entity.id) && entity.data.graphVersion === entity.version) return;
+      }
       // The response that raised this event may have settled after it; never reuse that one.
       requests.invalidate(staleKeys([id]));
       void sub.reload().catch(report);
@@ -295,30 +349,51 @@ export function subscribeEntity(id: string) {
 }
 const coverageOf = (id: string) =>
   (collections.query.get(`entity:${id}`)?.data.coverage as { state?: string } | undefined)?.state;
-const hydrated = (id: string) => ["complete", "stale"].includes(coverageOf(id) ?? "");
-export async function loadEntity(id: string, signal?: AbortSignal, speculative = false) {
+const hydrated = (id: string) => {
+  const entity = getEntity(id);
+  return (
+    !!entity &&
+    ["complete", "stale"].includes(coverageOf(id) ?? "") &&
+    entity.data.graphScope !== "viewport" &&
+    entity.data.summary !== true &&
+    entity.data.graphVersion === entity.version
+  );
+};
+export function queryReady(id: string) {
+  const coverage = collections.query.get(id)?.data.coverage as
+    | { state?: string; complete?: boolean; projection?: string }
+    | undefined;
+  return (
+    coverage?.projection !== "viewport" &&
+    (coverage?.state === "complete" || coverage?.state === "stale" || coverage?.complete === true)
+  );
+}
+export async function loadEntity(
+  id: string,
+  signal?: AbortSignal,
+  speculative = false,
+  ready = false,
+) {
   const read = () =>
     requests.run(
       `entity:${id}`,
       (sharedSignal) =>
-        span("load", "entity", () => readEntity(id, sharedSignal, speculative), {
-          id,
+        span("load", "entity", () => readEntity(id, sharedSignal, speculative, ready), {
           speculative,
+          ...contextFor(sharedSignal),
         }),
       {
         signal,
         speculative,
-        // A hover answer stays good until an event for this title says otherwise, and opening
-        // the title never reuses one that did not hydrate it (see `fresh`).
+        // Reuse complete graphs until an event or TTL invalidates the read.
         ttl: () => (speculative ? 60_000 : queryTTL(`entity:${id}`)),
-        // A hover read reports what is cached and starts no upstream work. Opening the title
-        // must not settle for that answer.
+        // Cache-only hints and progressive reads cannot satisfy a ready destination.
         fresh: () => hydrated(id),
       },
     );
   const result = await read();
   // The request this one joined may have been a hover read that was already in flight.
-  return !speculative && !hydrated(id) && !signal?.aborted ? read() : result;
+  return (!speculative || ready) && !hydrated(id) && !signal?.aborted ? read() : result;
 }
 // Warms several titles with one request. Each is then answered from the pool like a single read.
 export function loadTitles(ids: string[], signal?: AbortSignal) {
@@ -327,7 +402,10 @@ export function loadTitles(ids: string[], signal?: AbortSignal) {
   return requests.run(
     `titles:${wanted.join(",")}`,
     (sharedSignal) =>
-      span("load", "titles", () => readTitles(wanted, sharedSignal), { count: wanted.length }),
+      span("load", "titles", () => readTitles(wanted, sharedSignal), {
+        count: wanted.length,
+        ...contextFor(sharedSignal),
+      }),
     { signal, speculative: true, ttl: () => 5_000 },
   );
 }
@@ -349,23 +427,48 @@ async function readTitles(ids: string[], signal: AbortSignal) {
   for (const r of results) requests.prime(r.id, r.id, ttlFor(r.coverage.state), true);
   return null;
 }
-async function readEntity(id: string, signal: AbortSignal, speculative: boolean) {
+async function readEntity(id: string, signal: AbortSignal, speculative: boolean, ready = false) {
   const res = await readResponse<QueryResult>(
     await api.api.title[":id"].$get(
-      { param: { id }, query: speculative ? { warm: "1" } : {} },
+      {
+        param: { id },
+        query: {
+          ...(speculative ? { warm: "1" as const } : {}),
+          ...(ready ? { ready: "1" as const } : {}),
+        },
+      },
       { init: { signal } },
     ),
   );
   signal.throwIfAborted();
+  // Artwork can download while the graph is being committed and rendered.
+  void prepareGraphArtwork(
+    res.entities,
+    [...res.ids, ...(res.included?.flatMap((g) => g.ids) ?? [])],
+    getEntity,
+    signal,
+    !speculative,
+  ).catch(() => {});
+  const graphRows = [res, ...(res.included ?? [])];
   await commit({
     entities: res.entities,
-    query: {
-      id: res.id,
-      kind: "query",
-      version: Date.now(),
-      title: "Details",
-      data: { ids: res.ids, coverage: res.coverage },
-    },
+    query: graphRows
+      .filter((graph) => graph.coverage.projection !== "viewport" || !queryReady(graph.id))
+      .filter((graph) => {
+        const held = collections.query.get(graph.id);
+        return (
+          !held ||
+          stableSerialize(held.data.coverage) !== stableSerialize(graph.coverage) ||
+          stableSerialize(held.data.ids) !== stableSerialize(graph.ids)
+        );
+      })
+      .map((graph) => ({
+        id: graph.id,
+        kind: "query" as const,
+        version: Date.now(),
+        title: "Details",
+        data: { ids: graph.ids, coverage: graph.coverage },
+      })),
   });
   return res.id;
 }
@@ -423,8 +526,15 @@ export async function startSync(userId: string) {
         events++;
       }
       if (!events) return;
-      requests.invalidate(staleKeys(refetch, reset));
       await commit({ entities, removed });
+      // A hydration response may already contain exactly the source version announced by
+      // its event. Preserve that fresh pool entry instead of expiring it immediately.
+      const changed = new Set(
+        [...refetch].filter(
+          (id) => !id.startsWith("entity:") || !hydrated(id.slice("entity:".length)),
+        ),
+      );
+      requests.invalidate(staleKeys(changed, reset));
       track("sse", "batch", {
         ms: Math.round(performance.now() - handling),
         events,
@@ -824,7 +934,8 @@ export function loadSocial(
       span("load", "social", () => readSocial(kind, value, cursor, sharedSignal), {
         scope: kind,
         speculative,
+        ...contextFor(sharedSignal),
       }),
-    { signal, speculative, ttl: () => 5_000 },
+    { signal, speculative, ttl: () => 60_000 },
   );
 }

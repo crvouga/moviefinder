@@ -3,7 +3,7 @@ import { readConfig } from "./config";
 import { createDatabase } from "./db";
 import { createApplication } from "./app";
 import { log } from "./log";
-import { configureTelemetry } from "./telemetry";
+import { configureTelemetry, stopTelemetry } from "./telemetry";
 const config = readConfig(process.env);
 configureTelemetry(config.MOVIEFINDER_TELEMETRY_DIR);
 const { db, pool } = createDatabase(config.DATABASE_URL),
@@ -30,6 +30,7 @@ async function stop() {
   service.stop();
   await server.stop();
   await pool.end();
+  stopTelemetry();
   process.exit(0);
 }
 process.on("SIGTERM", () => void stop());

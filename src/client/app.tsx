@@ -1,5 +1,5 @@
 import { parseSearch, stringifySearch } from "../shared/search";
-import { useEffect, lazy, Suspense, Profiler, type ProfilerOnRenderCallback } from "react";
+import { useEffect, Suspense, Profiler, type ProfilerOnRenderCallback } from "react";
 import {
   createRootRoute,
   createRoute,
@@ -9,15 +9,24 @@ import {
   useLocation,
   useNavigate,
   RouterProvider,
+  useRouter,
 } from "@tanstack/react-router";
 import { Film } from "lucide-react";
 import { authClient } from "./auth-client";
-import { currentUserId, rememberUser } from "./session";
+import { rememberUser } from "./session";
+import { startSync, stopSync } from "./state";
+import { startNavigationPreloading } from "./preloading";
 import { report } from "./notifications";
-import { screenModules } from "./screen-modules";
+import Navigation from "./components/navigation";
+import { AuthPage } from "./pages/auth";
+import { Discover } from "./pages/discover";
+import { DetailPage } from "./pages/details";
+import { SearchPage } from "./pages/search";
+import { ListsPage, ListDetail } from "./pages/lists";
+import { ActivityPage, ProfilePage } from "./pages/social";
 import { Toast } from "./components/toast";
 import { ViewerProvider } from "./components/viewer";
-import { track, telemetryEnabled } from "./telemetry";
+import { track, telemetryEnabled, beginNavigation, resolveNavigation } from "./telemetry";
 
 const commit: ProfilerOnRenderCallback = (id, phase, actual, base) => {
   if (actual >= 8)
@@ -38,16 +47,8 @@ function Profiled({ id, children }: { id: string; children: React.ReactNode }) {
   );
 }
 
-const Navigation = lazy(() => import("./components/navigation"));
-let stateModule: Promise<typeof import("./state")> | undefined;
-const AuthPage = lazy(() => import("./pages/auth").then((m) => ({ default: m.AuthPage })));
-const Discover = lazy(() => screenModules.discover().then((m) => ({ default: m.Discover })));
-const DetailPage = lazy(() => screenModules.details().then((m) => ({ default: m.DetailPage })));
-const SearchPage = lazy(() => screenModules.search().then((m) => ({ default: m.SearchPage })));
-const ListsPage = lazy(() => screenModules.lists().then((m) => ({ default: m.ListsPage })));
-const ListDetail = lazy(() => screenModules.lists().then((m) => ({ default: m.ListDetail })));
-const ActivityPage = lazy(() => screenModules.social().then((m) => ({ default: m.ActivityPage })));
-const ProfilePage = lazy(() => screenModules.social().then((m) => ({ default: m.ProfilePage })));
+// All route components are available before the app becomes interactive. Navigation never
+// depends on downloading a screen chunk, data readiness, provider hydration or artwork.
 function Root() {
   const location = useLocation(),
     navigate = useNavigate(),
@@ -61,24 +62,18 @@ function Root() {
       void navigate({ to: "/auth", search: { returnTo: location.href }, replace: true });
   }, [session.isPending, session.data, isAuth]);
   useEffect(() => {
-    if (session.data && !isAuth) {
-      stateModule ??= import("./state");
-      void stateModule.then((m) => m.startSync(session.data!.user.id)).catch(report);
-    }
-    if (isAuth && stateModule) void stateModule.then((m) => m.stopSync());
+    if (session.data && !isAuth) void startSync(session.data.user.id).catch(report);
+    if (isAuth) stopSync();
   }, [session.data?.user.id, isAuth]);
   useEffect(() => {
     if (!session.data || isAuth) return;
-    let dispose: (() => void) | undefined;
-    let live = true;
-    void import("./preloading")
-      .then((m) => {
-        if (live) dispose = m.startNavigationPreloading(session.data!.user.id);
-      })
-      .catch(report);
+    const preloading = startNavigationPreloading(session.data.user.id);
+    const stopBefore = router.subscribe("onBeforeNavigate", preloading.pause);
+    const stopAfter = router.subscribe("onResolved", preloading.resume);
     return () => {
-      live = false;
-      dispose?.();
+      stopBefore();
+      stopAfter();
+      preloading();
     };
   }, [session.data?.user.id, isAuth]);
   if (isAuth)
@@ -125,7 +120,7 @@ function Root() {
             <Navigation userId={session.data.user.id} />
           </Profiled>
         </Suspense>
-        <main className="app-main" id="main-content">
+        <main className="app-main" id="main-content" data-route={location.pathname}>
           <Suspense
             fallback={
               <div className="route-placeholder" aria-label="Opening this page">
@@ -134,7 +129,7 @@ function Root() {
               </div>
             }
           >
-            <Profiled id="screen">
+            <Profiled id="screen" key={location.pathname}>
               <Outlet />
             </Profiled>
           </Suspense>
@@ -158,71 +153,58 @@ const root = createRootRoute({
     </div>
   ),
 });
-async function loadScreen({
-  location,
-  abortController,
-}: {
-  location: { href: string };
-  abortController: AbortController;
-}) {
-  const userId = await currentUserId();
-  if (!userId || abortController.signal.aborted) return;
-  try {
-    const { prepareScreen } = await import("./preloading");
-    await prepareScreen(location.href, userId, abortController.signal);
-  } catch (error) {
-    if (!abortController.signal.aborted) report(error);
-  }
-}
 const home = createRoute({
   getParentRoute: () => root,
   path: "/",
-  loader: loadScreen,
   component: () => <Discover userId={useCurrentUser()} />,
 });
 const auth = createRoute({ getParentRoute: () => root, path: "/auth", component: AuthPage });
 const search = createRoute({
   getParentRoute: () => root,
   path: "/search",
-  loader: loadScreen,
   component: SearchPage,
 });
 const lists = createRoute({
   getParentRoute: () => root,
   path: "/lists",
-  loader: loadScreen,
   component: () => <ListsPage userId={useCurrentUser()} />,
 });
 const list = createRoute({
   getParentRoute: () => root,
   path: "/lists/$listId",
-  loader: loadScreen,
   component: () => <ListDetail userId={useCurrentUser()} />,
 });
 const detail = createRoute({
   getParentRoute: () => root,
   path: "/title/$id",
-  loader: loadScreen,
   component: () => <DetailPage userId={useCurrentUser()} />,
 });
 const activity = createRoute({
   getParentRoute: () => root,
   path: "/activity",
-  loader: loadScreen,
   component: () => <ActivityPage userId={useCurrentUser()} />,
 });
 const profile = createRoute({
   getParentRoute: () => root,
   path: "/profile",
-  loader: loadScreen,
   component: () => <ProfilePage currentUserId={useCurrentUser()} />,
 });
 const publicProfile = createRoute({
   getParentRoute: () => root,
   path: "/profile/$userId",
-  loader: loadScreen,
   component: () => <ProfilePage currentUserId={useCurrentUser()} />,
 });
+function ScreenError() {
+  const currentRouter = useRouter();
+  return (
+    <div className="standard-page">
+      <h1>This page couldn’t be opened.</h1>
+      <p>Please try again shortly.</p>
+      <button onClick={() => void currentRouter.invalidate()}>Try again</button>
+      <Link to="/">Back to Discover</Link>
+    </div>
+  );
+}
 export const router = createRouter({
   parseSearch,
   stringifySearch,
@@ -239,7 +221,9 @@ export const router = createRouter({
   ]),
   scrollRestoration: true,
   defaultPreload: false,
-  defaultPendingMs: 150,
+  // Route commitment has no asynchronous data or media prerequisites.
+  defaultPendingMs: 0,
+  defaultErrorComponent: ScreenError,
   defaultPendingMinMs: 0,
 });
 declare module "@tanstack/react-router" {
@@ -248,14 +232,10 @@ declare module "@tanstack/react-router" {
   }
 }
 if (telemetryEnabled) {
-  let began = 0;
-  router.subscribe("onBeforeNavigate", () => (began = performance.now()));
-  router.subscribe("onResolved", (e) =>
-    track("route", e.toLocation.pathname, {
-      ms: began ? Math.round(performance.now() - began) : undefined,
-    }),
-  );
+  router.subscribe("onBeforeNavigate", (e) => beginNavigation(e.toLocation.href));
+  router.subscribe("onResolved", (e) => resolveNavigation(e.toLocation.href));
 }
+
 export function App() {
   return <RouterProvider router={router} />;
 }

@@ -13,6 +13,8 @@ const Statuses = createContext(noStatuses);
 const Titles = createContext(noTitles);
 const ListItems = createContext(noItems);
 const Users = createContext(noTitles);
+type SaveList = { list: Entity; titleIds: Set<string>; count: number };
+const SaveLists = createContext<SaveList[]>([]);
 
 export function compareOrder(a: Entity, b: Entity) {
   const x = fieldText(a.data.orderKey),
@@ -30,7 +32,9 @@ export function ViewerProvider({
     movies = useEntities("movie"),
     series = useEntities("tv"),
     items = useEntities("item"),
-    users = useEntities("user");
+    users = useEntities("user"),
+    lists = useEntities("list"),
+    members = useEntities("collaborator");
   const tagged = useMemo(
     () =>
       new Map(
@@ -48,17 +52,38 @@ export function ViewerProvider({
     const map = new Map<string, Entity[]>();
     for (const item of items) {
       const listId = fieldText(item.data.listId);
-      map.set(listId, [...(map.get(listId) ?? []), item]);
+      const group = map.get(listId);
+      if (group) group.push(item);
+      else map.set(listId, [item]);
     }
     for (const list of map.values()) list.sort(compareOrder);
     return map;
   }, [items]);
+  // Build the picker before a click, using the canonical collections. Opening a drawer must
+  // not start whole-collection live queries or rescan every item for every list.
+  const saveLists = useMemo(() => {
+    const editable = new Set(
+      members.filter((member) => member.data.userId === userId).map((member) => member.data.listId),
+    );
+    return lists
+      .filter((list) => editable.has(list.id))
+      .map((list) => {
+        const entries = itemsByList.get(list.id) ?? [];
+        return {
+          list,
+          titleIds: new Set(entries.map((item) => fieldText(item.data.titleId))),
+          count: entries.length,
+        };
+      });
+  }, [lists, members, itemsByList, userId]);
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   return (
     <Statuses value={tagged}>
       <Titles value={titles}>
         <ListItems value={itemsByList}>
-          <Users value={usersById}>{children}</Users>
+          <Users value={usersById}>
+            <SaveLists value={saveLists}>{children}</SaveLists>
+          </Users>
         </ListItems>
       </Titles>
     </Statuses>
@@ -71,3 +96,4 @@ export const useViewerStatus = (titleId: string): Tagged | undefined =>
 export const useTitles = () => useContext(Titles);
 export const useListItems = (listId: string) => useContext(ListItems).get(listId) ?? none;
 export const useUsers = () => useContext(Users);
+export const useSaveLists = () => useContext(SaveLists);

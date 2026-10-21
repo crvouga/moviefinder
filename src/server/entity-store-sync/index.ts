@@ -1,3 +1,4 @@
+import { timed, record, telemetryKey, forgetTelemetryKey, inTrace, background } from "../telemetry";
 import { supportsGenres, movieGenreIds, tvGenreIds } from "../../shared/genres";
 import { mergeDiscovery, supportsMerge } from "./discovery";
 import { fieldText } from "../../shared/contracts";
@@ -67,7 +68,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
     if (checkpoint && checkpoint.payload.resumeAt > Date.now())
       throw new UpstreamError(429, checkpoint.payload.resumeAt - Date.now());
     try {
-      return await tmdb(path, params, signal);
+      return await timed("upstream", `GET ${path}`, () => tmdb(path, params, signal));
     } catch (error) {
       if (error instanceof UpstreamError && error.status === 429) {
         const resumeAt = Date.now() + Math.max(1000, error.retryAfter);
@@ -95,39 +96,70 @@ export function createSync(db: Database, tmdb: Tmdb) {
   const finished = (jobId: string) => {
     for (const wake of waiters.get(jobId) ?? []) wake();
     waiters.delete(jobId);
+    forgetTelemetryKey(jobId);
   };
   let connectionFailures = 0;
   let lastDatabaseLog = -Infinity;
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let delayedWake: ReturnType<typeof setTimeout> | undefined;
+  let wakeAt = Infinity;
   // `delayMs` marks work nobody is waiting for. The provider lane is sequential and rate limited,
   // so a person skimming past titles must not queue ahead of the one they open; a request with no
   // delay promotes a job that is still waiting.
   async function enqueue(id: string, kind: string, params: Record<string, unknown>, delayMs = 0) {
     const due = new Date(Date.now() + delayMs);
+    const priority = delayMs === 0 ? 2 : delayMs < 1000 ? 1 : 0;
     await db
       .insert(jobs)
-      .values({ id, kind, params, runAt: due })
+      .values({ id, kind, params: { ...params, priority }, runAt: due })
       .onConflictDoUpdate({
         target: jobs.id,
         set: {
           state: sql`case when ${jobs.state} = 'done' or (${jobs.state} = 'failed' and ${jobs.runAt} <= now()) then 'pending' else ${jobs.state} end`,
           runAt: delayMs
             ? sql`case when ${jobs.state} = 'done' then ${due} else ${jobs.runAt} end`
-            : sql`case when ${jobs.state} = 'done' then now() when ${jobs.state} = 'pending' then least(${jobs.runAt}, now()) else ${jobs.runAt} end`,
+            : sql`case when ${jobs.state} = 'done' then now() when ${jobs.state} = 'pending' and ${jobs.attempts} = 0 then least(${jobs.runAt}, now()) else ${jobs.runAt} end`,
           attempts: sql`case when ${jobs.state} = 'done' then 0 else ${jobs.attempts} end`,
+          params: sql`${jobs.params} || jsonb_build_object('priority', case when ${jobs.state} = 'done' then ${priority} else greatest(coalesce((${jobs.params}->>'priority')::int, 0), ${priority}) end)`,
         },
       });
+    record("job", "enqueue", { workId: telemetryKey(id), delayMs });
     if (!delayMs) kick();
+    else if (started && !stopped && due.getTime() < wakeAt) {
+      clearTimeout(delayedWake);
+      wakeAt = due.getTime();
+      delayedWake = setTimeout(
+        () => {
+          wakeAt = Infinity;
+          delayedWake = undefined;
+          kick();
+        },
+        Math.max(0, wakeAt - Date.now()),
+      );
+    }
   }
   async function hydrate(id: string, delayMs = 0) {
     return enqueue(`entity:${id}`, "entity", { id }, delayMs);
   }
   // Resolves true when the title's hydration job finishes (or already had), false on timeout or
   // when no worker runs in this process. Callers fall back to events in that case.
-  async function settled(id: string, timeoutMs: number, signal?: AbortSignal) {
+  const settledJob = (jobId: string, timeoutMs: number, signal?: AbortSignal) => {
+    const workId = telemetryKey(jobId);
+    return timed("job-wait", "settled", () => waitForJob(jobId, timeoutMs, signal), {
+      workId,
+      timeoutMs,
+    }).then((done) => {
+      record("job-wait", "outcome", {
+        workId,
+        outcome: done ? "success" : !started || stopped ? "cancelled" : "timeout",
+      });
+      return done;
+    });
+  };
+  async function waitForJob(jobId: string, timeoutMs: number, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (!started || stopped) return false;
-    const jobId = `entity:${id}`;
     let wake!: () => void;
     const done = new Promise<boolean>((resolve) => {
       wake = () => resolve(true);
@@ -139,22 +171,32 @@ export function createSync(db: Database, tmdb: Tmdb) {
       const [job] = await db.select({ state: jobs.state }).from(jobs).where(eq(jobs.id, jobId));
       if (!job || job.state === "done" || job.state === "failed") return true;
       return await new Promise<boolean>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(false), timeoutMs);
-        const abortNow = () => {
+        const cleanup = () => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", abortNow);
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          resolve(false);
+        }, timeoutMs);
+        const abortNow = () => {
+          cleanup();
           reject(signal!.reason);
         };
         signal?.addEventListener("abort", abortNow, { once: true });
+        if (signal?.aborted) abortNow();
         void done.then((value) => {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", abortNow);
+          cleanup();
           resolve(value);
         });
       });
     } finally {
       set.delete(wake);
+      if (!set.size && waiters.get(jobId) === set) waiters.delete(jobId);
     }
   }
+  const settled = (id: string, timeoutMs: number, signal?: AbortSignal) =>
+    settledJob(`entity:${id}`, timeoutMs, signal);
   // New work should not wait for the next poll.
   function kick() {
     if (!started || stopped) return;
@@ -163,7 +205,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
       return;
     }
     if (timer) clearTimeout(timer);
-    void tick();
+    void background(tick);
   }
   async function runJob(job: typeof jobs.$inferSelect) {
     if (job.kind === "entity") {
@@ -291,7 +333,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
       if (rerun && !stopped) {
         rerun = false;
         if (timer) clearTimeout(timer);
-        void tick();
+        void background(tick);
       }
     }
   }
@@ -300,7 +342,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
     try {
       const claimed = await db.transaction(async (tx) => {
         const result = await tx.execute(
-          sql`select id from moviefinder.sync_job where (state='pending' and run_at <= now()) or (state='running' and lease_until < now()) order by run_at limit 2 for update skip locked`,
+          sql`select id from moviefinder.sync_job where (state='pending' and run_at <= now()) or (state='running' and lease_until < now()) order by coalesce((params->>'priority')::int, 0) desc, run_at limit 1 for update skip locked`,
         );
         const ids = result.rows.map((r) => fieldText(r.id));
         if (!ids.length) return [];
@@ -322,10 +364,30 @@ export function createSync(db: Database, tmdb: Tmdb) {
       });
       if (connectionFailures) log("sync", "Database connection restored");
       connectionFailures = 0;
+      // Drain due work without an idle 800 ms gap; re-select after each job so a click can
+      // overtake queued speculation. Empty polls still back off and provider pacing is unchanged.
+      if (claimed.length) nextPoll = 0;
+      else {
+        // A single earliest-wake timer cannot cover every delayed interest. Once that wake
+        // has fired, schedule the next actual deadline rather than sleeping past it.
+        const [next] = await db
+          .select({ runAt: jobs.runAt })
+          .from(jobs)
+          .where(sql`${jobs.state} = 'pending' and ${jobs.runAt} > now()`)
+          .orderBy(jobs.runAt)
+          .limit(1);
+        if (next) nextPoll = Math.min(nextPoll, Math.max(1, next.runAt.getTime() - Date.now()));
+      }
       // A bounded, sequential upstream lane makes rate limiting predictable.
       for (const job of claimed) {
         try {
-          await runJob(job);
+          await inTrace({ traceId: crypto.randomUUID() }, () =>
+            timed("job", "run", () => runJob(job), {
+              workId: telemetryKey(job.id),
+              queueMs: Math.max(0, Date.now() - job.runAt.getTime()),
+              attempt: job.attempts,
+            }),
+          );
           metrics.syncSuccess++;
           finished(job.id);
         } catch (error) {
@@ -363,6 +425,12 @@ export function createSync(db: Database, tmdb: Tmdb) {
               .update(sources)
               .set({ lastFailure: new Date(), error: message })
               .where(eq(sources.id, fieldText(job.params.id)));
+          record("job", "retry", {
+            workId: telemetryKey(job.id),
+            attempt: job.attempts,
+            retryMs: retry,
+            failed: fatal || job.attempts >= 12,
+          });
           log("sync", message, { job: job.id, attempt: job.attempts });
           finished(job.id);
         }
@@ -389,7 +457,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
         lastDatabaseLog = Date.now();
       }
     }
-    if (!stopped) timer = setTimeout(() => void tick(), nextPoll);
+    if (!stopped) timer = setTimeout(() => void background(tick), nextPoll);
   }
   async function warm() {
     const stale = await db
@@ -397,7 +465,7 @@ export function createSync(db: Database, tmdb: Tmdb) {
       .from(sources)
       .where(sql`${sources.refreshAt}<now() and ${sources.fetchedAt}>now()-interval '7 days'`)
       .limit(8);
-    for (const row of stale) await hydrate(row.id);
+    for (const row of stale) await hydrate(row.id, 1000);
   }
   return {
     enqueue,
@@ -406,14 +474,17 @@ export function createSync(db: Database, tmdb: Tmdb) {
     warm,
     start() {
       started = true;
-      void tick();
+      void background(tick);
     },
     settled,
+    settledJob,
     kick,
     stop() {
       stopped = true;
       abort.abort();
       if (timer) clearTimeout(timer);
+      clearTimeout(delayedWake);
+      for (const id of waiters.keys()) finished(id);
     },
     runJob,
   };

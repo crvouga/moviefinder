@@ -676,6 +676,42 @@ describe("anticipatory title reads", () => {
       sync.stop();
     }
   });
+  it("hydrates a high-confidence prediction and returns its complete graph", async () => {
+    const sync = createSync(db, fixtureUpstream),
+      query = createQueries(db, sync);
+    sync.start();
+    try {
+      const result = await query.entity("tmdb:person:7020", owner, undefined, true, true);
+      expect(result.coverage.state).toBe("complete");
+      expect(
+        result.entities.find((e) => e.id === "tmdb:person:7020")?.data.relations,
+      ).toBeDefined();
+      expect(result.entities.some((e) => e.kind === "credit")).toBe(true);
+    } finally {
+      sync.stop();
+    }
+  });
+  it("waits for authoritative discovery coverage when preparing a route", async () => {
+    const sync = createSync(db, fixtureUpstream),
+      query = createQueries(db, sync),
+      params = feedParams.parse({ type: "movie", seed: "ready-route-coverage" });
+    sync.start();
+    try {
+      const result = await query.discover(params, owner, undefined, true);
+      expect(result.coverage.state).toBe("complete");
+      expect(result.ids).toHaveLength(12);
+      await db
+        .update(schema.queryCache)
+        .set({ error: "Catalog synchronization failed" })
+        .where(eq(schema.queryCache.id, result.id));
+      const cached = await query.discover(params, owner, undefined, true);
+      expect(cached.coverage.state).toBe("error");
+      expect(cached.coverage.complete).toBe(true);
+      expect(cached.ids).toEqual(result.ids);
+    } finally {
+      sync.stop();
+    }
+  });
   it("serves batches over the API", async () => {
     const cookie = (await register("batcher")).cookie;
     const res = await service.app.request("/api/titles?ids=tmdb:movie:550,tmdb:tv:1399", {
@@ -689,4 +725,157 @@ describe("anticipatory title reads", () => {
     );
     expect(bad.status).toBe(400);
   });
+});
+
+describe("first-screen graph inclusion and scheduling", () => {
+  it("bundles bounded cached neighbours without fetching their neighbours or other users' state", async () => {
+    await db.transaction(async (tx) => {
+      await store.ingest(
+        tx,
+        "tmdb:person:819",
+        {
+          id: 819,
+          name: "Edward Norton",
+          biography: "Cached biography",
+          profile_path: "/cached-person.jpg",
+          combined_credits: {
+            cast: Array.from({ length: 80 }, (_, i) => ({
+              id: 80000 + i,
+              title: `Cached film ${i}`,
+              media_type: "movie",
+              credit_id: `cached-role-${i}`,
+            })),
+          },
+        },
+        "detail",
+      );
+      await store.ingest(
+        tx,
+        "tmdb:movie:680",
+        { ...movieDetail, id: 680, title: "Pulp Fiction" },
+        "detail",
+      );
+    });
+    const upstream = vi.fn(fixtureUpstream);
+    const sync = createSync(db, upstream);
+    try {
+      const result = await createQueries(db, sync).entity("tmdb:movie:550", owner);
+      expect(result.coverage.state).toBe("complete");
+      expect(result.included?.map((graph) => graph.id)).toContain("entity:tmdb:person:819");
+      expect(result.included?.every((graph) => graph.coverage.projection === "viewport")).toBe(
+        true,
+      );
+      const person = result.entities.find((entity) => entity.id === "tmdb:person:819")!;
+      expect(person.overview).toBe("Cached biography");
+      expect(person.poster).toBe("/cached-person.jpg");
+      expect(person.data.graphScope).toBe("viewport");
+      expect((person.data.relations as Record<string, string[]>).filmography).toHaveLength(24);
+      expect(result.entities.some((entity) => entity.id === "tmdb:movie:80079")).toBe(false);
+      // The root's complete graph must survive a cycle through a neighbouring movie.
+      expect(
+        result.entities.find((entity) => entity.id === "tmdb:movie:550")?.data.graphScope,
+      ).toBeUndefined();
+      expect(
+        result.entities
+          .filter((entity) => entity.kind === "status")
+          .every((entity) => entity.data.userId === owner),
+      ).toBe(true);
+      expect(upstream).not.toHaveBeenCalled();
+      expect(new Set(result.entities.map((entity) => `${entity.kind}:${entity.id}`)).size).toBe(
+        result.entities.length,
+      );
+    } finally {
+      sync.stop();
+    }
+  });
+  it("serves foreground hydration ahead of due speculation and drains without poll gaps", async () => {
+    await db.delete(schema.jobs);
+    const calls: string[] = [];
+    const sync = createSync(db, async (path, params) => {
+      calls.push(path);
+      return fixtureUpstream(path, params);
+    });
+    await sync.hydrate("tmdb:movie:89001", 1000);
+    await db
+      .update(schema.jobs)
+      .set({ runAt: new Date(Date.now() - 10000) })
+      .where(eq(schema.jobs.id, "entity:tmdb:movie:89001"));
+    await sync.hydrate("tmdb:movie:89002");
+    const started = Date.now();
+    sync.start();
+    try {
+      await vi.waitFor(
+        async () => {
+          const jobs = await db.select().from(schema.jobs);
+          expect(jobs.filter((job) => job.state === "done")).toHaveLength(2);
+        },
+        { timeout: 3000, interval: 10 },
+      );
+      expect(calls).toEqual(["movie/89002", "movie/89001"]);
+      expect(Date.now() - started).toBeLessThan(700);
+    } finally {
+      sync.stop();
+    }
+  });
+  it("promotes interests without bypassing a retry deadline", async () => {
+    const sync = createSync(db, fixtureUpstream);
+    const runAt = new Date(Date.now() + 60000);
+    try {
+      await db.insert(schema.jobs).values({
+        id: "entity:tmdb:movie:89003",
+        kind: "entity",
+        params: { id: "tmdb:movie:89003", priority: 0 },
+        runAt,
+        attempts: 2,
+        state: "pending",
+      });
+      await sync.hydrate("tmdb:movie:89003");
+      const [job] = await db
+        .select()
+        .from(schema.jobs)
+        .where(eq(schema.jobs.id, "entity:tmdb:movie:89003"));
+      expect(job?.runAt.getTime()).toBe(runAt.getTime());
+      expect(job?.params.priority).toBe(2);
+      expect(job?.attempts).toBe(2);
+    } finally {
+      sync.stop();
+    }
+  });
+});
+
+it("wakes for each delayed hydration deadline instead of missing later interests", async () => {
+  await db.delete(schema.jobs);
+  const sync = createSync(db, fixtureUpstream);
+  await sync.hydrate("tmdb:movie:89004", 80);
+  await sync.hydrate("tmdb:movie:89005", 220);
+  const started = Date.now();
+  sync.start();
+  try {
+    await vi.waitFor(
+      async () => {
+        const jobs = await db.select().from(schema.jobs);
+        expect(jobs.filter((job) => job.state === "done")).toHaveLength(2);
+      },
+      { timeout: 3000, interval: 10 },
+    );
+    expect(Date.now() - started).toBeLessThan(700);
+  } finally {
+    sync.stop();
+  }
+});
+
+it("keeps cache-only partial source rows as summaries rather than declaring their graph loaded", async () => {
+  await db.transaction((tx) => store.ingest(tx, "tmdb:movie:89006", { ...movie, id: 89006 }));
+  const sync = createSync(db, fixtureUpstream);
+  try {
+    const result = await createQueries(db, sync).entity("tmdb:movie:89006", owner, undefined, true);
+    expect(result.coverage.state).toBe("partial");
+    const root = result.entities.find((entity) => entity.id === "tmdb:movie:89006")!;
+    expect(root.data.summary).toBe(true);
+    expect(root.data.graphVersion).toBeUndefined();
+    expect(root.related).toBeUndefined();
+    expect(result.included).toBeUndefined();
+  } finally {
+    sync.stop();
+  }
 });

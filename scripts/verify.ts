@@ -54,11 +54,33 @@ try {
   ]);
   // Browser tests serve dist/, so a stale build would silently test old client code.
   if (mode === "e2e") await run(["bun", "x", "--no-install", "vp", "build"]);
+  if (mode === "observability" && !directory)
+    directory = await mkdtemp(join(tmpdir(), "moviefinder-observability-"));
   await run(
-    mode === "e2e"
-      ? ["bun", "x", "--no-install", "playwright", "test", ...process.argv.slice(3)]
-      : ["bun", "x", "--no-install", "vp", "test", "run", "--project", "integration"],
-    { ...process.env, TEST_DATABASE_URL: url },
+    mode === "observability"
+      ? [
+          "bun",
+          "x",
+          "--no-install",
+          "playwright",
+          "test",
+          "--config",
+          "playwright.observability.config.ts",
+          ...process.argv.slice(3),
+        ]
+      : mode === "e2e"
+        ? ["bun", "x", "--no-install", "playwright", "test", ...process.argv.slice(3)]
+        : ["bun", "x", "--no-install", "vp", "test", "run", "--project", "integration"],
+    {
+      ...process.env,
+      TEST_DATABASE_URL: url,
+      ...(mode === "observability"
+        ? {
+            MOVIEFINDER_OBSERVABILITY_TEST: "1",
+            MOVIEFINDER_TELEMETRY_DIR: join(directory!, "telemetry"),
+          }
+        : {}),
+    },
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Database verification failed");

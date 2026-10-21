@@ -27,7 +27,8 @@
     "db:migrate:shared": "vault run -- bun scripts/migrate.ts apply",
     "db:status:shared": "vault run -- bun scripts/migrate.ts status",
     "test:local-database": "vp test run --project local-database",
-    "db:drift:shared": "vault run -- bun scripts/migrate.ts drift"
+    "db:drift:shared": "vault run -- bun scripts/migrate.ts drift",
+    "test:observability": "bun scripts/verify.ts observability"
   },
   "dependencies": {
     "@hono/zod-validator": "0.9.1",

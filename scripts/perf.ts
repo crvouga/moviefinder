@@ -15,6 +15,7 @@ import { fixtureUpstream, movieDetail } from "../tests/fixtures/catalog";
 // Reproducible performance run: isolated embedded PostgreSQL, a synthetic catalog, the real
 // Vite dev client, and a scripted browser session. Prints the telemetry summary afterwards.
 //   bun run perf [--titles 2000] [--seed 600] [--lists 12] [--throttle 4] [--headed] [--keep]
+//   bun run perf --drawer [--profile]   # focused add-to-list open/close reproduction
 const args = process.argv.slice(2);
 const option = (name: string, fallback: number) => {
   const i = args.indexOf(`--${name}`);
@@ -63,12 +64,16 @@ async function freePort() {
 const children: ChildProcess[] = [];
 let database: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+let activePage: Awaited<ReturnType<NonNullable<typeof browser>["newPage"]>> | undefined;
+let closeApplication = async () => {};
 let exitCode = 0;
 try {
   database = await openLocalDatabase(directory);
   await migrateLocalDatabase(database.url);
   configureTelemetry(telemetry);
   const { db, pool } = createDatabase(database.url);
+  closeApplication = () => pool.end();
   const log = console.log;
   console.log = (...values: unknown[]) =>
     typeof values[0] === "string" && values[0].startsWith('{"timestamp"')
@@ -203,6 +208,10 @@ try {
     }),
     upstream,
   );
+  closeApplication = async () => {
+    service.stop();
+    await pool.end();
+  };
   service.sync.start();
   server = Bun.serve({
     hostname: "127.0.0.1",
@@ -219,10 +228,13 @@ try {
     if ((await fetch(`${origin}/health`).catch(() => undefined))?.ok) break;
     await Bun.sleep(500);
   }
-  const browser = await chromium.launch({ headless: !args.includes("--headed") });
+  browser = await chromium.launch({ headless: !args.includes("--headed") });
   const page = await (
     await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   ).newPage();
+  activePage = page;
+  page.on("crash", () => console.error("Performance browser renderer crashed"));
+  page.on("pageerror", (error) => console.error(`Performance browser error: ${error.message}`));
   if (throttle > 1) {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
@@ -252,131 +264,271 @@ try {
     await page.locator(".discovery-slide").first().waitFor({ timeout: 60000 });
   });
   await page.waitForTimeout(3000);
-  await mark("scroll 30 slides", async () => {
-    for (let i = 0; i < 30; i++) {
-      await page.keyboard.press("ArrowDown");
-      await page.waitForTimeout(350);
-    }
-  });
-  await mark("tag, open a title, go back", async () => {
-    const slide = page.locator(".swiper-slide-active");
-    await slide.getByRole("button", { name: "Like", exact: true }).click();
-    await slide.locator(".slide-title").click();
-    await page.locator(".detail-intro h1").waitFor({ timeout: 30000 });
-    await page.waitForTimeout(1500);
-    await page.goBack();
-    await page.locator(".discovery-slide").first().waitFor();
-  });
-  // People and long series are the heaviest screens, and cost grows as the cache fills.
-  // What a person feels: from the click to the page being filled in, and how many reads it took.
-  await mark("cold navigation to five people", async () => {
-    await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
-    await page.locator(".person-card").first().waitFor({ timeout: 60000 });
-    const cards = page.locator(".person-card");
-    const times: number[] = [];
-    let reads = 0;
-    page.on("request", (r) => /\/api\/titles?[/?]/.test(r.url()) && reads++);
-    for (const n of [20, 22, 24, 26, 28]) {
-      await page.waitForTimeout(1500);
-      const started = Date.now();
-      await cards.nth(n).click();
-      await page.getByRole("heading", { name: "A career in stories." }).waitFor({ timeout: 30000 });
-      times.push(Date.now() - started);
-      await page.goBack();
-      await page.locator(".person-card").first().waitFor({ timeout: 30000 });
-    }
-    console.log(`  to filmography (ms): ${times.join(", ")}; title reads: ${reads}`);
-  });
-  await mark("browse people and series without reloading", async () => {
-    await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
-    await page.locator(".detail-intro h1").waitFor({ timeout: 60000 });
-    // Skimming across the cast the way a pointer does, twice: the second pass should be free.
-    for (let pass = 0; pass < 2; pass++)
-      for (const card of await page.locator(".person-card").all()) {
-        await card.hover();
-        await page.waitForTimeout(160);
+  if (args.includes("--drawer")) {
+    page.on("dialog", async (dialog) => {
+      console.error("Drawer opened a blocking native browser dialog");
+      await dialog.dismiss();
+      exitCode = 1;
+    });
+    for (const populated of [false, true]) {
+      if (populated) {
+        await page.evaluate(async (count) => {
+          for (let n = 0; n < count; n++) {
+            await fetch("/api/command", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "list.create",
+                operationId: crypto.randomUUID(),
+                title: `Drawer list ${n}`,
+                description: "",
+              }),
+            });
+          }
+        }, listCount);
+        await page.reload();
+        await page.locator(".swiper-slide-active").waitFor();
       }
-    // Client-side navigation only, so the collections keep growing like a long real session.
-    for (let step = 0; step < 24; step++) {
-      await page.waitForTimeout(1200);
-      const cards = page.locator(".person-card, .title-card");
-      const count = await cards.count();
-      if (!count) break;
-      const before = await page.locator(".detail-intro h1").textContent();
-      await cards.nth((step * 7) % Math.min(count, 18)).click();
-      await page
-        .waitForFunction(
-          (title) => document.querySelector(".detail-intro h1")?.textContent !== title,
-          before,
-          { timeout: 30000 },
-        )
-        .catch(() => {});
+      for (let n = 0; n < 3; n++) {
+        await mark(`drawer ${populated ? "with lists" : "empty"} open/close ${n + 1}`, async () => {
+          await page
+            .locator(".swiper-slide-active")
+            .getByRole("button", { name: "Add to list" })
+            .click();
+          const drawer = page.getByRole("dialog", { name: "Save for a good night" });
+          await drawer.waitFor({ timeout: 5000 });
+          await drawer.getByRole("button", { name: "Create a list" }).waitFor({ timeout: 5000 });
+          await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
+          const input = drawer.getByRole("textbox", { name: "List name", exact: true });
+          await input.pressSequentially("A responsive movie night", { delay: 20 });
+          if ((await input.inputValue()) !== "A responsive movie night")
+            throw new Error("Drawer input did not accept typing");
+          const frameMs = await page.evaluate(
+            () =>
+              new Promise<number>((resolve) => {
+                const started = performance.now();
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => resolve(performance.now() - started)),
+                );
+              }),
+          );
+          console.log(`  drawer form next paint opportunity: ${Math.round(frameMs)} ms`);
+          await drawer.getByRole("button", { name: "Close", exact: true }).click({ timeout: 5000 });
+          await drawer.waitFor({ state: "hidden", timeout: 5000 });
+        });
+      }
     }
-    const tab = page.getByRole("button", { name: "Acting", exact: true });
-    if (await tab.count()) {
-      await tab.click();
+  } else {
+    await mark("scroll 30 slides", async () => {
+      for (let i = 0; i < 30; i++) {
+        await page.keyboard.press("ArrowDown");
+        await page.waitForTimeout(350);
+      }
+    });
+    await mark("tag, open a title, go back", async () => {
+      const slide = page.locator(".swiper-slide-active");
+      await slide.getByRole("button", { name: "Like", exact: true }).click();
+      await slide.locator(".slide-title").click();
+      await page.locator(".detail-intro h1").waitFor({ timeout: 30000 });
       await page.waitForTimeout(1500);
-    }
-  });
-  await mark("lists, tags, activity and profile", async () => {
-    // Fill the account the way weeks of use would: tags, lists with many items, activity.
-    const listIds = await page.evaluate(
-      async ({ lists, perList, tags }) => {
-        const post = (json: unknown) =>
-          fetch("/api/command", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(json),
-          }).then((r) => r.json());
-        const batches = async (count: number, work: (n: number) => Promise<unknown>) => {
-          for (let n = 1; n <= count; n += 8)
-            await Promise.all(
-              Array.from({ length: Math.min(8, count - n + 1) }, (_, k) => work(n + k)),
-            );
+      await page.goBack();
+      await page.locator(".discovery-slide").first().waitFor();
+    });
+    // Measure the destination's next paint opportunity separately from background enrichment.
+    const openPerson = async (n: number) => {
+      const card = page.locator(".person-card").nth(n);
+      const href = (await card.getAttribute("href"))!;
+      const id = decodeURIComponent(href.split("/").at(-1)!);
+      await page.evaluate((id) => {
+        const metrics = window as unknown as {
+          __navigationTiming?: { shell: number; data?: number; started: number };
         };
-        const ids: string[] = [];
-        for (let l = 0; l < lists; l++) {
-          const made = await post({
-            type: "list.create",
-            operationId: crypto.randomUUID(),
-            title: `Perf list ${l}`,
-            description: "A list used to measure interface performance.",
-          });
-          const listId = made.entities.find((e: { kind: string }) => e.kind === "list").id;
-          ids.push(listId);
-          await batches(perList, (n) =>
-            post({
-              type: "list.add",
+        delete metrics.__navigationTiming;
+        document.addEventListener(
+          "click",
+          () => {
+            const started = performance.now();
+            const observer = new MutationObserver(check);
+            function check() {
+              if (document.querySelector(".detail-page")?.getAttribute("data-title-id") !== id)
+                return;
+              observer.disconnect();
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  metrics.__navigationTiming = { shell: performance.now() - started, started };
+                }),
+              );
+            }
+            observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+            check();
+          },
+          { capture: true, once: true },
+        );
+      }, id);
+      // Preserve the chosen identity if live graph hydration inserts earlier cast cards.
+      await page.locator(`.person-card[href="${href}"]`).first().click();
+      await page.waitForFunction(() =>
+        Boolean((window as unknown as { __navigationTiming?: unknown }).__navigationTiming),
+      );
+      await page.getByRole("heading", { name: "A career in stories." }).waitFor({ timeout: 30000 });
+      return page.evaluate(() => {
+        const value = (
+          window as unknown as { __navigationTiming: { shell: number; started: number } }
+        ).__navigationTiming;
+        return {
+          shell: Math.round(value.shell),
+          data: Math.round(performance.now() - value.started),
+        };
+      });
+    };
+    await mark("cold navigation to five people", async () => {
+      await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
+      await page.locator(".person-card").first().waitFor({ timeout: 60000 });
+      const times: { shell: number; data: number }[] = [];
+      let reads = 0;
+      page.on("request", (r) => /\/api\/titles?[/?]/.test(r.url()) && reads++);
+      for (const n of [20, 22, 24, 26, 28]) {
+        await page.waitForTimeout(1500);
+        times.push(await openPerson(n));
+        await page.goBack();
+        await page.locator(".person-card").first().waitFor({ timeout: 30000 });
+      }
+      console.log(
+        `  click to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
+      );
+      console.log(
+        `  click to filmography (ms): ${times.map((t) => t.data).join(", ")}; title reads: ${reads}`,
+      );
+    });
+    await mark("prepared navigation to five people", async () => {
+      const times: { shell: number; data: number }[] = [];
+      for (const n of [0, 1, 2, 3, 4]) {
+        await page.locator(".person-card").nth(n).hover();
+        await page.waitForTimeout(1800);
+        times.push(await openPerson(n));
+        await page.goBack();
+        await page.locator(".person-card").first().waitFor();
+      }
+      console.log(
+        `  prepared click to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
+      );
+      console.log(`  prepared click to filmography (ms): ${times.map((t) => t.data).join(", ")}`);
+    });
+    await mark("cached neighbour graph with its direct API response blocked", async () => {
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pattern = /\/api\/title\/.*person/i;
+      await page.route(pattern, async (route) => {
+        await blocked;
+        await route.continue().catch(() => {});
+      });
+      try {
+        // A fresh client receives the cached first-screen graph in its parent's response.
+        await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
+        await page.locator(".person-card").first().waitFor({ timeout: 30000 });
+        const timing = await openPerson(0);
+        await page.locator('.detail-page[data-content-ready="true"]').waitFor();
+        console.log(
+          `  cached graph click to destination / filmography (ms): ${timing.shell} / ${timing.data}`,
+        );
+      } finally {
+        release();
+        await page.unroute(pattern);
+      }
+    });
+    await mark("browse people and series without reloading", async () => {
+      await page.goto(`${origin}/title/${encodeURIComponent("tmdb:tv:5")}`);
+      await page.locator(".detail-intro h1").waitFor({ timeout: 60000 });
+      // Skimming across the cast the way a pointer does, twice: the second pass should be free.
+      for (let pass = 0; pass < 2; pass++)
+        for (const card of await page.locator(".person-card").all()) {
+          await card.hover();
+          await page.waitForTimeout(160);
+        }
+      // Client-side navigation only, so the collections keep growing like a long real session.
+      for (let step = 0; step < 24; step++) {
+        await page.waitForTimeout(1200);
+        const cards = page.locator(".person-card, .title-card");
+        const count = await cards.count();
+        if (!count) break;
+        const before = await page.locator(".detail-intro h1").textContent();
+        await cards.nth((step * 7) % Math.min(count, 18)).click();
+        await page
+          .waitForFunction(
+            (title) => document.querySelector(".detail-intro h1")?.textContent !== title,
+            before,
+            { timeout: 30000 },
+          )
+          .catch(() => {});
+      }
+      const tab = page.getByRole("button", { name: "Acting", exact: true });
+      if (await tab.count()) {
+        await tab.click();
+        await page.waitForTimeout(1500);
+      }
+    });
+    await mark("lists, tags, activity and profile", async () => {
+      // Fill the account the way weeks of use would: tags, lists with many items, activity.
+      const listIds = await page.evaluate(
+        async ({ lists, perList, tags }) => {
+          const post = (json: unknown) =>
+            fetch("/api/command", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(json),
+            }).then((r) => r.json());
+          const batches = async (count: number, work: (n: number) => Promise<unknown>) => {
+            for (let n = 1; n <= count; n += 8)
+              await Promise.all(
+                Array.from({ length: Math.min(8, count - n + 1) }, (_, k) => work(n + k)),
+              );
+          };
+          const ids: string[] = [];
+          for (let l = 0; l < lists; l++) {
+            const made = await post({
+              type: "list.create",
               operationId: crypto.randomUUID(),
-              listId,
-              titleId: `tmdb:movie:${n + l * 3}`,
+              title: `Perf list ${l}`,
+              description: "A list used to measure interface performance.",
+            });
+            const listId = made.entities.find((e: { kind: string }) => e.kind === "list").id;
+            ids.push(listId);
+            await batches(perList, (n) =>
+              post({
+                type: "list.add",
+                operationId: crypto.randomUUID(),
+                listId,
+                titleId: `tmdb:movie:${n + l * 3}`,
+              }),
+            );
+          }
+          await batches(tags, (n) =>
+            post({
+              type: "status",
+              operationId: crypto.randomUUID(),
+              titleId: `tmdb:movie:${n}`,
+              sentiment: n % 3 ? "liked" : "meh",
+              seen: n % 2 === 0,
             }),
           );
-        }
-        await batches(tags, (n) =>
-          post({
-            type: "status",
-            operationId: crypto.randomUUID(),
-            titleId: `tmdb:movie:${n}`,
-            sentiment: n % 3 ? "liked" : "meh",
-            seen: n % 2 === 0,
-          }),
-        );
-        return ids;
-      },
-      { lists: listCount, perList: 40, tags: 200 },
-    );
-    for (const path of ["/lists", `/lists/${listIds[0]}`, "/activity", "/profile", "/"]) {
-      await page.goto(`${origin}${path}`);
-      await page.waitForTimeout(3500);
-    }
-  });
-  await mark("lists and search", async () => {
-    await page.goto(`${origin}/lists`);
-    await page.waitForTimeout(2000);
-    await page.goto(`${origin}/search?q=Synthetic`);
-    await page.waitForTimeout(3000);
-  });
+          return ids;
+        },
+        { lists: listCount, perList: 40, tags: 200 },
+      );
+      for (const path of ["/lists", `/lists/${listIds[0]}`, "/activity", "/profile", "/"]) {
+        await page.goto(`${origin}${path}`);
+        await page.waitForTimeout(3500);
+      }
+    });
+    await mark("lists and search", async () => {
+      await page.goto(`${origin}/lists`);
+      await page.waitForTimeout(2000);
+      await page.goto(`${origin}/search?q=Synthetic`);
+      await page.waitForTimeout(3000);
+    });
+  }
   await page.waitForTimeout(6000);
   await page.evaluate(() =>
     (
@@ -388,13 +540,19 @@ try {
     const { profile } = (await profiler.send("Profiler.stop")) as { profile: CpuProfile };
     printProfile(profile);
   }
-  await browser.close();
-  service.stop();
-  await pool.end();
 } catch (error) {
   console.error(error instanceof Error ? error.stack : error);
+  if (activePage && !activePage.isClosed()) {
+    const screenshot = resolve(".local/perf-failure.png");
+    await activePage.screenshot({ path: screenshot, timeout: 2000 }).then(
+      () => console.error(`Performance failure screenshot: ${screenshot}`),
+      () => console.error("Performance browser did not respond to a failure screenshot"),
+    );
+  }
   exitCode = 1;
 } finally {
+  await browser?.close().catch(() => {});
+  await closeApplication();
   for (const child of children) child.kill("SIGTERM");
   await server?.stop(true);
   stopTelemetry();
