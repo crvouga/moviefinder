@@ -13,6 +13,12 @@ import { snapshot } from "../../src/server/state";
 import * as schema from "../../src/server/db/schema";
 import { type Command, feedParams } from "../../src/shared/contracts";
 import { movie, movieDetail, television, fixtureUpstream } from "../fixtures/catalog";
+import {
+  startGoogle,
+  googleSignIn,
+  googleCallback,
+  type GoogleTestProvider,
+} from "../fixtures/google";
 const url = process.env.TEST_DATABASE_URL;
 if (
   !url ||
@@ -29,8 +35,9 @@ const { db, pool } = createDatabase(url),
     MOVIEFINDER_ORIGIN: "http://localhost:5173",
     NODE_ENV: "test",
   }),
-  service = createApplication(db, config, fixtureUpstream),
   store = createEntityStore(db);
+let service: ReturnType<typeof createApplication>;
+let google: GoogleTestProvider;
 let owner = "",
   editor = "",
   viewer = "",
@@ -39,24 +46,20 @@ let owner = "",
 const cmd = (userId: string, command: Omit<Command, "operationId">) =>
   executeCommand(db, userId, { ...command, operationId: crypto.randomUUID() } as Command);
 async function register(name: string) {
-  const res = await service.app.request("/api/auth/sign-up/email", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: config.MOVIEFINDER_ORIGIN },
-    body: JSON.stringify({
-      email: `${name}@example.test`,
-      name,
-      password: "a-strong-test-password",
-      username: name,
-    }),
+  const signedIn = await googleSignIn(service, google, config.MOVIEFINDER_ORIGIN, {
+    id: name,
+    email: `${name}@example.test`,
+    name,
   });
-  expect(res.status).toBe(200);
-  const value = await res.json();
-  return {
-    id: value.user.id as string,
-    cookie: res.headers.get("set-cookie")?.split(";")[0] ?? "",
-  };
+  await db
+    .update(schema.user)
+    .set({ username: name, displayUsername: name })
+    .where(eq(schema.user.id, signedIn.id));
+  return signedIn;
 }
 beforeAll(async () => {
+  google = await startGoogle(config.MOVIEFINDER_ORIGIN);
+  service = createApplication(db, { ...config, ...google.config }, fixtureUpstream);
   await db.execute(
     sql`truncate moviefinder."user",moviefinder.source_entity,moviefinder.query_cache,moviefinder.sync_job,moviefinder.event cascade`,
   );
@@ -72,6 +75,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   service.stop();
+  await google.close();
   await pool.end();
 });
 describe("real PostgreSQL authentication and authorization", () => {
@@ -312,49 +316,27 @@ describe("cache-first catalog and durable synchronization", () => {
 });
 
 describe("recovery and social boundaries", () => {
-  it("issues and consumes a real Better Auth recovery token and revokes prior sessions", async () => {
-    let email = "";
-    vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
-      email = JSON.parse(typeof init?.body === "string" ? init.body : "{}").text;
-      return Response.json({ id: "test-mail" });
+  it.each([
+    "sign-up/email",
+    "sign-in/email",
+    "sign-in/username",
+    "request-password-reset",
+    "reset-password",
+    "change-password",
+    "set-password",
+    "verify-password",
+  ])("rejects the disabled credential endpoint %s", async (path) => {
+    const response = await service.app.request(`/api/auth/${path}`, {
+      method: "POST",
+      headers: { Origin: config.MOVIEFINDER_ORIGIN, "Content-Type": "application/json" },
+      body: "{}",
     });
-    const recovery = createApplication(
-      db,
-      { ...config, RESEND_API_KEY: "test-delivery-only", EMAIL_FROM: "test@example.test" },
-      fixtureUpstream,
-    );
-    try {
-      const request = await recovery.app.request("/api/auth/request-password-reset", {
-        method: "POST",
-        headers: { Origin: config.MOVIEFINDER_ORIGIN, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: "owner@example.test",
-          redirectTo: "http://localhost:5173/auth",
-        }),
-      });
-      expect(request.status).toBe(200);
-      const url = email.match(/http[^\s]+/)?.[0];
-      expect(url).toBeTruthy();
-      const token = new URL(url!).pathname.split("/").at(-1);
-      const reset = await recovery.app.request("/api/auth/reset-password", {
-        method: "POST",
-        headers: { Origin: config.MOVIEFINDER_ORIGIN, "Content-Type": "application/json" },
-        body: JSON.stringify({ token, newPassword: "a-new-recovered-password" }),
-      });
-      expect(reset.status).toBe(200);
-      expect(
-        (await recovery.app.request("/api/state", { headers: { Cookie: ownerCookie } })).status,
-      ).toBe(401);
-      const login = await recovery.app.request("/api/auth/sign-in/email", {
-        method: "POST",
-        headers: { Origin: config.MOVIEFINDER_ORIGIN, "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "owner@example.test", password: "a-new-recovered-password" }),
-      });
-      expect(login.status).toBe(200);
-    } finally {
-      recovery.stop();
-      vi.unstubAllGlobals();
-    }
+    expect(response.status).toBe(404);
+  });
+  it("rejects legacy token-specific password reset links", async () => {
+    expect(
+      (await service.app.request("/api/auth/reset-password/obsolete-fixture-token")).status,
+    ).toBe(404);
   });
   it("searches registered users and public lists through the database", async () => {
     const result = await service.app.request("/api/social-search?q=owner", {
@@ -569,25 +551,26 @@ describe("database initialization diagnostics", () => {
       );
     }
   });
-  it("returns an actionable auth failure without printing SQL parameters for a missing user table", async () => {
+  it("returns a safe Google callback failure without printing SQL parameters for a missing user table", async () => {
     await db.execute(sql`alter table moviefinder."user" rename to user_pending_migrations`);
     const output = vi.spyOn(console, "log").mockImplementation(() => {}),
       errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       await expect(assertDatabaseReady(db)).rejects.toBeInstanceOf(DatabaseNotReady);
-      const response = await service.app.request("/api/auth/sign-in/email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Origin: config.MOVIEFINDER_ORIGIN },
-        body: JSON.stringify({
-          email: "never-log-this@example.test",
-          password: "never-log-this-password",
-        }),
+      const response = await googleCallback(service, google, config.MOVIEFINDER_ORIGIN, {
+        id: "missing_table",
+        email: "never-log-this@example.test",
+        name: "Missing table fixture",
       });
-      expect(response.status).toBe(503);
-      expect(await response.json()).toMatchObject({
-        code: "DATABASE_NOT_READY",
-        message: expect.stringContaining("not been initialized"),
-      });
+      expect(response.status).toBe(302);
+      const destination = new URL(response.headers.get("location")!);
+      expect(destination.origin).toBe(config.MOVIEFINDER_ORIGIN);
+      expect(destination.pathname).toBe("/auth");
+      expect(destination.searchParams.get("socialError")).toBe("1");
+      expect(destination.searchParams.get("error")).toBe("internal_server_error");
+      expect(
+        response.headers.getSetCookie().some((cookie) => cookie.includes(".session_token=")),
+      ).toBe(false);
       expect(errors).not.toHaveBeenCalled();
       const logged = JSON.stringify(output.mock.calls);
       expect(logged).not.toContain("never-log-this");
@@ -599,16 +582,12 @@ describe("database initialization diagnostics", () => {
       await db.execute(sql`alter table moviefinder.user_pending_migrations rename to "user"`);
     }
   });
-  it("preserves expected invalid-credential responses with centralized auth error handling", async () => {
-    const response = await service.app.request("/api/auth/sign-in/email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Origin: config.MOVIEFINDER_ORIGIN },
-      body: JSON.stringify({
-        email: "owner@example.test",
-        password: "a-different-invalid-password",
-      }),
-    });
-    expect(response.status).toBe(401);
+  it("does not expose a password fallback alongside Google sign-in", async () => {
+    const response = await service.app.request("/api/auth-options");
+    expect(await response.json()).toEqual({ google: true });
+    expect(
+      (await db.select().from(schema.account)).every((row) => row.providerId === "auth-relay"),
+    ).toBe(true);
   });
   it("pauses synchronization after a missing-table error rather than polling every second", async () => {
     await db.execute(sql`alter table moviefinder.sync_job rename to sync_job_pending_migrations`);

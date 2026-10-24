@@ -116,9 +116,13 @@ Normal `bun run test:e2e` exercises the production build without browser telemet
 
 The performance harness creates another isolated embedded database and synthetic catalog, then
 registers, scrolls, tags, opens cold/prepared people and series, fills lists and visits each screen.
+It measures primary link navigation from the initial pointer press before browsing and again after
+the client collections have grown, retaining the same document and client DB for the latter pass.
+The press is captured before the app's input handlers, so preparation cannot hide outside the
+measurement; person-link measurements use the same starting point.
 It makes no provider network requests. Run it without concurrent browser suites or source edits,
-since Vite reloads invalidate timings. The harness reports click-to-destination paint opportunity
-separately from click-to-filmography. Compare background preparation, request waits, SQL/provider
+since Vite reloads invalidate timings. The harness reports press-to-destination paint opportunity
+separately from press-to-filmography. Compare background preparation, request waits, SQL/provider
 work, image waits, long tasks and React commits. Synthetic timings help reproduce problems but do
 not establish a live-provider latency guarantee.
 

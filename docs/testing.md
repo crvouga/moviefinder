@@ -6,6 +6,14 @@ Run `bun install --frozen-lockfile` once. `bun run check` uses Vite+ for formatt
 
 `bun run build && bun run test:e2e` verifies the real compiled UI against Bun/Hono, persisted Better Auth, isolated embedded PostgreSQL, and deterministic TMDB fixtures. Install the matching browser with `bun x playwright install chromium` when necessary. Mobile and desktop projects cover registration, session reload, tags, catalog navigation, list editing, profile updates, searching, and cross-user SSE/reconnect. Browser failure evidence stays in ignored test-results; it contains test accounts only.
 
+Cold-navigation coverage reloads with the bootstrap snapshot and all data APIs blocked, leaving
+the client DB empty. It then holds enrichment animation callbacks and activates every primary
+navigation link, verifying the destination heading appears before its live queries mount.
+Separate checks cover cached detail graphs, blocked images, back/forward, search edits and filters.
+A production-browser check measures pointer/keyboard input through the destination's next rendering
+opportunity under 4× CPU throttling, with bootstrap and all data APIs held. Every primary destination
+must stay below 100 ms and request no additional screen scripts.
+
 Unit/property coverage exercises canonical identity, missing-field normalization, credit/season/episode links, canonical serialization, compound filter/cursor validation, permissions, dense ordering keys, redirect safety, replay revision gating, and upstream Retry-After/errors.
 
 Integration coverage uses real transactions for authentication tables, unauthorized APIs/origins, field independence, operation deduplication, list permissions/invitations, concurrent additions/moves, public copies, audience-filtered replay, cache-first query hydration, durable request deduplication, preservation of hydrated source data, and transactional snapshots.
@@ -23,3 +31,5 @@ The container smoke helper defaults to linux/amd64; set CONTAINER_PLATFORM=linux
 `bun run test:local-database` exercises the real embedded PostgreSQL package in a temporary directory: Atlas bootstrap, Better Auth registration, safe attachment to a running local cluster, shutdown, persistence across restart, and rejection of a nonlocal migration target. It does not use Vault, shared DATABASE_URL, Docker, or the developer's persistent `.local/` data. CI runs this alongside the existing PostgreSQL integration suite. Platform binary postinstall scripts are explicitly trusted so package-required library symlinks are generated on fresh installs.
 
 Local schema generation/verification also uses embedded PostgreSQL: committed migrations replay into a temporary application database and Atlas normalizes the desired schema in a separate temporary scratch database. Both are cleaned up. This keeps Atlas diff/checks independent of Docker and the developer's `.local/` cluster. Docker remains necessary only for container-image verification.
+
+Authentication fixtures use Mockingbird's Google OAuth profile (`@crvouga/mockingbird-service-oauth`, development dependency). Tests perform public S256 PKCE and real signed-token verification through the same Better Auth callback as the shared relay. Browser tests drive the emulator's documented account creation and consent controls; they never enable password login or use real Google/Vault credentials. Database lifecycle and application integration fixtures also authenticate through Mockingbird. Dedicated adversarial relay tests remain for invalid signatures/claims and single-use transaction rejection. The Google-only screen is checked on mobile and desktop for its official asset, preserved aspect ratio, keyboard focus, errors, cancellation, and absence of credential fields; integration tests assert all credential endpoints return 404.

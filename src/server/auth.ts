@@ -2,13 +2,12 @@ import { log } from "./log";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { username } from "better-auth/plugins";
-import { APIError } from "better-auth/api";
 import type { Database } from "./db";
 import type { Config } from "./config";
 import * as schema from "./db/schema";
+import { authCookiePrefix, authRelay, withRelayStateCookies } from "./auth-relay";
 export function createAuth(db: Database, config: Config) {
-  const mailReady = !!config.RESEND_API_KEY && !!config.EMAIL_FROM;
-  return betterAuth({
+  const auth = betterAuth({
     appName: "MovieFinder",
     logger: {
       level: "error",
@@ -16,7 +15,7 @@ export function createAuth(db: Database, config: Config) {
     },
     // Let Hono sanitize unexpected errors. The auth router otherwise prints SQL and parameters.
     // Expected APIErrors still become their normal HTTP responses inside Better Call.
-    onAPIError: { throw: true },
+    onAPIError: { throw: true, errorURL: `${config.MOVIEFINDER_ORIGIN}/auth?socialError=1` },
     secret: config.BETTER_AUTH_SECRET,
     baseURL: config.MOVIEFINDER_ORIGIN,
     trustedOrigins: [config.MOVIEFINDER_ORIGIN],
@@ -29,53 +28,43 @@ export function createAuth(db: Database, config: Config) {
         verification: schema.verification,
       },
     }),
-    emailAndPassword: {
-      enabled: true,
-      minPasswordLength: 10,
-      maxPasswordLength: 128,
-      revokeSessionsOnPasswordReset: true,
-      sendResetPassword: async ({ user, url }) => {
-        if (!mailReady)
-          throw new APIError("SERVICE_UNAVAILABLE", {
-            message: "Account recovery email is not configured. Contact the service operator.",
-          });
-        const res = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${config.RESEND_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            from: config.EMAIL_FROM,
-            to: user.email,
-            subject: "Reset your MovieFinder password",
-            text: `Reset your password using this link: ${url}\nIf you did not request this, ignore this email.`,
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok)
-          throw new APIError("SERVICE_UNAVAILABLE", {
-            message: "Recovery email could not be delivered. Try again later.",
-          });
-      },
-    },
+    emailAndPassword: { enabled: false },
+    disabledPaths: [
+      "/sign-up/email",
+      "/sign-in/email",
+      "/sign-in/username",
+      "/request-password-reset",
+      "/reset-password",
+      "/change-password",
+      "/set-password",
+      "/verify-password",
+    ],
     user: { additionalFields: { bio: { type: "string", required: false, defaultValue: "" } } },
-    socialProviders:
-      config.MOVIEFINDER_GOOGLE_CLIENT_ID && config.MOVIEFINDER_GOOGLE_CLIENT_SECRET
-        ? {
-            google: {
-              clientId: config.MOVIEFINDER_GOOGLE_CLIENT_ID,
-              clientSecret: config.MOVIEFINDER_GOOGLE_CLIENT_SECRET,
-            },
-          }
-        : {},
+    account: {
+      accountLinking: { enabled: false },
+      encryptOAuthTokens: true,
+      storeStateStrategy: "database",
+    },
     session: { expiresIn: 60 * 60 * 24 * 14, updateAge: 60 * 60 * 24 },
-    plugins: [username()],
+    plugins: [
+      username(),
+      {
+        id: "google-only",
+        async onRequest(request) {
+          // disabledPaths matches exact paths; also close old token-specific reset links.
+          if (new URL(request.url).pathname.startsWith("/api/auth/reset-password/"))
+            return { response: new Response("Not Found", { status: 404 }) };
+        },
+      },
+      ...(config.MOVIEFINDER_OIDC_ISSUER ? [authRelay(config)] : []),
+    ],
     advanced: {
+      cookiePrefix: authCookiePrefix(config),
       useSecureCookies: config.NODE_ENV === "production",
       database: { generateId: () => crypto.randomUUID() },
     },
     rateLimit: { enabled: config.NODE_ENV !== "test", window: 60, max: 60 },
   });
+  return { ...auth, handler: withRelayStateCookies(auth.handler, config) };
 }
 export type Auth = ReturnType<typeof createAuth>;

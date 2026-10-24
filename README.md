@@ -9,7 +9,7 @@ Requires Bun 1.4.2, a supported Node runtime (22.22.3 used here), Atlas, and the
 1. `bun install --frozen-lockfile`.
 2. Authenticate using the documented `vault login` workflow. This checkout's `.vault.yaml` selects `personal/dev`.
 3. Run `bun run dev`, or choose **Run → MovieFinder** in super.engineering.
-4. Open the `http://localhost:<port>` URL printed at startup and register an account on the first run.
+4. Open the `http://localhost:<port>` URL printed at startup. Use **Sign in with Google**. A new MovieFinder account is created automatically on first sign-in.
 
 Startup initializes a local PostgreSQL cluster, creates the local database/schema, applies committed Atlas migrations, and starts both development servers. Both servers use free ports chosen at each start (the URL is printed), and Vite+ proxies API requests to Bun. The database listens only on loopback, uses an available port, and persists under ignored `.local/postgres`. Generated local credentials stay in private ignored `.local/postgres.json`; they never enter Git or Docker build contexts. `bun run telemetry watch --since 5m` shows live bottlenecks while you browse, and `bun run telemetry traces` connects navigation to API, database and provider work; see [observability](docs/observability.md). Stop shuts down the development servers and their PostgreSQL process while retaining your data. A later run reopens the same database.
 
@@ -17,7 +17,9 @@ The local launcher always supplies its own database URL, overriding any shared `
 
 Production requires `DATABASE_URL` and the platform-generated `MOVIEFINDER_AUTH_SECRET` (the existing `BETTER_AUTH_SECRET` remains supported for local compatibility); local development generates its database connection and still requires `BETTER_AUTH_SECRET`. Production also requires the app-specific `MOVIEFINDER_ORIGIN`. `TMDB_API_READ_ACCESS_TOKEN` enables catalog refresh; cached content remains usable during an upstream outage. `.env.example` lists variable names without values. Never reuse another application's authentication base URL.
 
-Email/password registration works without a social provider. Recovery is enabled only with `RESEND_API_KEY` and a verified `EMAIL_FROM`. Google login appears only with app-specific `MOVIEFINDER_GOOGLE_CLIENT_ID` and `MOVIEFINDER_GOOGLE_CLIENT_SECRET`. These integrations require registered infrastructure secrets and callback/sender configuration.
+Google is the only sign-in method. Password registration, password sign-in and recovery endpoints are disabled on the backend. Google login uses the shared auth relay, with public `MOVIEFINDER_OIDC_ISSUER` and `MOVIEFINDER_OIDC_CLIENT_ID` settings from an approved relay registration. MovieFinder never receives Google credentials or an OIDC client secret. See [Google sign-in setup](docs/auth-relay.md) for registration, exact callbacks, local ports and verification limits.
+
+When registration settings are saved in ignored `.local/auth-relay.json`, ordinary `bun run dev` configures Google automatically and retains the registered port. Live Google-backed sign-in has been verified locally; see the setup guide for registration expiry and renewal requirements.
 
 ## super.engineering hooks
 
