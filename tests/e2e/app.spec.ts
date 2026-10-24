@@ -630,6 +630,224 @@ test("all primary destinations open without waiting for API responses or additio
   }
 });
 
+test("cold destinations commit before live queries mount, with bootstrap and all data reads blocked", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, "connection", {
+      configurable: true,
+      value: { saveData: true, effectiveType: "4g" },
+    }),
+  );
+  await register(page, "/search");
+  await expect(
+    page.getByRole("textbox", { name: "Search movies, series, people, and lists" }),
+  ).toBeVisible();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(/\/api\/(?!auth\/)/, async (route) => {
+    await blocked;
+    await route.continue().catch(() => {});
+  });
+  // A new document discards every in-memory collection. Keep only the authenticated session.
+  await page.reload();
+  await expect(
+    page.getByRole("textbox", { name: "Search movies, series, people, and lists" }),
+  ).toBeVisible();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    // Hold the screen-enrichment frames, while allowing the browser itself to keep painting.
+    // A destination must render its own heading before any of its live-query hooks run.
+    await page.evaluate(() => {
+      const request = window.requestAnimationFrame.bind(window);
+      const cancel = window.cancelAnimationFrame.bind(window);
+      const queued = new Map<number, FrameRequestCallback>();
+      let held = true;
+      window.requestAnimationFrame = (callback) => {
+        const id = request((time) => (held ? queued.set(id, callback) : callback(time)));
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => {
+        queued.delete(id);
+        cancel(id);
+      };
+      (window as unknown as { __resumeScreenFrames(): void }).__resumeScreenFrames = () => {
+        held = false;
+        window.requestAnimationFrame = request;
+        window.cancelAnimationFrame = cancel;
+        for (const callback of queued.values()) request(callback);
+        queued.clear();
+      };
+    });
+    for (const [label, path, heading] of [
+      ["Collections", "/lists", "A list for every kind of night."],
+      ["Community", "/activity", "In good company."],
+      ["Your profile", "/profile", "Movie lover"],
+      ["Discover", "/", "Find your next obsession."],
+      ["Search", "/search", "What are you in the mood for?"],
+    ]) {
+      // DOM activation also covers keyboard/programmatic link activation, without waiting on
+      // Playwright's actionability frames that are intentionally held by this test.
+      await page
+        .getByRole("link", { name: label!, exact: true })
+        .first()
+        .evaluate((link: HTMLAnchorElement) => link.click());
+      await expect(page.locator("#main-content")).toHaveAttribute("data-route", path!, {
+        timeout: 250,
+      });
+      await expect(
+        page.locator("[data-screen-preview]").getByRole("heading", { name: heading!, exact: true }),
+      ).toBeVisible({ timeout: 250 });
+    }
+    await page.evaluate(() =>
+      (window as unknown as { __resumeScreenFrames(): void }).__resumeScreenFrames(),
+    );
+    await expect(
+      page.getByRole("textbox", { name: "Search movies, series, people, and lists" }),
+    ).toBeVisible();
+    expect(errors).toEqual([]);
+  } finally {
+    release();
+  }
+});
+
+for (const scheduling of ["native", "idle", "timer"] as const) {
+  test(`preparation yields out of the input handler with ${scheduling} scheduling`, async ({
+    page,
+  }) => {
+    await page.addInitScript((scheduling) => {
+      if (scheduling !== "native") Object.defineProperty(window, "scheduler", { value: undefined });
+      if (scheduling === "timer")
+        Object.defineProperty(window, "requestIdleCallback", { value: undefined });
+    }, scheduling);
+    await register(page, "/search");
+    await expect(
+      page.getByRole("textbox", { name: "Search movies, series, people, and lists" }),
+    ).toBeVisible();
+    const id = "tmdb:person:96001";
+    const requested = page.waitForRequest(
+      (request) => decodeURIComponent(new URL(request.url()).pathname) === `/api/title/${id}`,
+    );
+    const synchronous = await page.evaluate((id) => {
+      const originalFetch = window.fetch;
+      let started = false;
+      window.fetch = Object.assign((...args: Parameters<typeof originalFetch>) => {
+        const [input, init] = args;
+        const href = input instanceof Request ? input.url : String(input);
+        if (decodeURIComponent(new URL(href, location.origin).pathname) === `/api/title/${id}`)
+          started = true;
+        return originalFetch.call(window, input, init);
+      }, originalFetch);
+      const link = document.createElement("a");
+      link.href = `/title/${encodeURIComponent(id)}`;
+      link.style.cssText = "position:absolute;top:-10000px;left:0";
+      document.body.append(link);
+      try {
+        link.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+        return started;
+      } finally {
+        window.fetch = originalFetch;
+      }
+    }, id);
+    expect(synchronous).toBe(false);
+    await requested;
+    await expect(page).toHaveURL(/\/search$/);
+  });
+}
+
+test("cold pointer and keyboard navigation paints within 100ms at 4x CPU with every data request held", async ({
+  page,
+}) => {
+  await register(page, "/search");
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(/\/api\/(?!auth\/)/, async (route) => {
+    await blocked;
+    await route.continue().catch(() => {});
+  });
+  // Drop all client entities, while retaining the authenticated cookie.
+  await page.reload();
+  await expect(
+    page.getByRole("textbox", { name: "Search movies, series, people, and lists" }),
+  ).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const times: { path: string; ms: number }[] = [];
+  const scripts: string[] = [];
+  page.on("request", (request) => {
+    if (request.resourceType() === "script") scripts.push(request.url());
+  });
+  try {
+    for (const [index, [label, path, heading]] of [
+      ["Collections", "/lists", "A list for every kind of night."],
+      ["Community", "/activity", "In good company."],
+      ["Your profile", "/profile", "Movie lover"],
+      ["Discover", "/", "Find your next obsession."],
+      ["Search", "/search", "What are you in the mood for?"],
+    ].entries()) {
+      await page.evaluate(
+        ({ path, heading }) => {
+          const metrics = window as unknown as { __inputToPaintMs?: number };
+          delete metrics.__inputToPaintMs;
+          const start = (event: Event) => {
+            if (event instanceof KeyboardEvent && event.key !== "Enter") return;
+            window.removeEventListener("pointerdown", start, true);
+            window.removeEventListener("keydown", start, true);
+            // Window capture runs before the app's document handlers, including preloading.
+            const began = event.timeStamp;
+            const observer = new MutationObserver(() => {
+              const main = document.querySelector("#main-content");
+              if (
+                main?.getAttribute("data-route") !== path ||
+                main.querySelector("h1")?.textContent !== heading
+              )
+                return;
+              observer.disconnect();
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  metrics.__inputToPaintMs = performance.now() - began;
+                }),
+              );
+            });
+            observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+          };
+          window.addEventListener("pointerdown", start, true);
+          window.addEventListener("keydown", start, true);
+        },
+        { path: path!, heading: heading! },
+      );
+      const link = page.getByRole("link", { name: label!, exact: true }).first();
+      if (index % 2) {
+        await link.focus();
+        await link.press("Enter");
+      } else await link.click();
+      await page.waitForFunction(
+        () =>
+          typeof (window as unknown as { __inputToPaintMs?: number }).__inputToPaintMs === "number",
+      );
+      const ms = await page.evaluate(
+        () => (window as unknown as { __inputToPaintMs: number }).__inputToPaintMs,
+      );
+      times.push({ path: path!, ms: Math.round(ms) });
+      expect(ms, `Input to destination rendering opportunity for ${path}`).toBeLessThan(100);
+      await expect(link).toHaveClass(/active/);
+    }
+    expect(scripts).toEqual([]);
+    await test.info().attach("cold-navigation-timings", {
+      body: JSON.stringify(times),
+      contentType: "application/json",
+    });
+  } finally {
+    release();
+    await cdp.detach();
+  }
+});
+
 for (const saveData of [false, true]) {
   test(`prepares a bounded set of visible links and respects Save-Data (${saveData})`, async ({
     page,

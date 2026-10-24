@@ -1,4 +1,4 @@
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import {
   Film,
   Compass,
@@ -11,8 +11,7 @@ import {
 } from "lucide-react";
 import { useEntities } from "../state";
 export default function Navigation({ userId }: { userId: string }) {
-  const location = useLocation(),
-    users = useEntities("user"),
+  const users = useEntities("user"),
     invitations = useEntities("invitation"),
     user = users.find((u) => u.id === userId),
     nav = [
@@ -40,12 +39,9 @@ export default function Navigation({ userId }: { userId: string }) {
             <Link
               key={to}
               to={to}
-              className={
-                location.pathname === to ||
-                (to === "/lists" && location.pathname.startsWith("/lists/"))
-                  ? "nav-link active"
-                  : "nav-link"
-              }
+              className="nav-link"
+              activeProps={{ className: "active" }}
+              activeOptions={{ exact: to !== "/lists", includeSearch: false }}
             >
               <Icon size={19} />
               <span>{label}</span>
@@ -91,12 +87,8 @@ export default function Navigation({ userId }: { userId: string }) {
             key={to}
             to={to}
             aria-label={label}
-            className={
-              location.pathname === to ||
-              (to === "/lists" && location.pathname.startsWith("/lists/"))
-                ? "active"
-                : ""
-            }
+            activeProps={{ className: "active" }}
+            activeOptions={{ exact: to !== "/lists", includeSearch: false }}
           >
             <Icon size={21} />
             <span>

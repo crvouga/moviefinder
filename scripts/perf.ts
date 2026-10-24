@@ -264,6 +264,52 @@ try {
     await page.locator(".discovery-slide").first().waitFor({ timeout: 60000 });
   });
   await page.waitForTimeout(3000);
+  const primaryNavigation = async () => {
+    const times: string[] = [];
+    for (const [label, path] of [
+      ["Collections", "/lists"],
+      ["Community", "/activity"],
+      ["Your profile", "/profile"],
+      ["Search", "/search"],
+      ["Discover", "/"],
+    ]) {
+      await page.evaluate((path) => {
+        const metrics = window as unknown as { __primaryNavigationMs?: number };
+        delete metrics.__primaryNavigationMs;
+        window.addEventListener(
+          "pointerdown",
+          (event) => {
+            const started = event.timeStamp;
+            const observer = new MutationObserver(() => {
+              if (document.querySelector("#main-content")?.getAttribute("data-route") !== path)
+                return;
+              observer.disconnect();
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  metrics.__primaryNavigationMs = performance.now() - started;
+                }),
+              );
+            });
+            observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+          },
+          { capture: true, once: true },
+        );
+      }, path!);
+      await page.getByRole("link", { name: label!, exact: true }).first().click();
+      await page.waitForFunction(
+        () =>
+          typeof (window as unknown as { __primaryNavigationMs?: number }).__primaryNavigationMs ===
+          "number",
+      );
+      const ms = await page.evaluate(
+        () => (window as unknown as { __primaryNavigationMs: number }).__primaryNavigationMs,
+      );
+      times.push(`${path} ${Math.round(ms)} ms`);
+      await page.waitForTimeout(300);
+    }
+    console.log(`  primary link press to destination paint opportunity: ${times.join(", ")}`);
+  };
+  await mark("primary navigation before browsing", primaryNavigation);
   if (args.includes("--drawer")) {
     page.on("dialog", async (dialog) => {
       console.error("Drawer opened a blocking native browser dialog");
@@ -344,10 +390,10 @@ try {
           __navigationTiming?: { shell: number; data?: number; started: number };
         };
         delete metrics.__navigationTiming;
-        document.addEventListener(
-          "click",
-          () => {
-            const started = performance.now();
+        window.addEventListener(
+          "pointerdown",
+          (event) => {
+            const started = event.timeStamp;
             const observer = new MutationObserver(check);
             function check() {
               if (document.querySelector(".detail-page")?.getAttribute("data-title-id") !== id)
@@ -394,10 +440,10 @@ try {
         await page.locator(".person-card").first().waitFor({ timeout: 30000 });
       }
       console.log(
-        `  click to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
+        `  press to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
       );
       console.log(
-        `  click to filmography (ms): ${times.map((t) => t.data).join(", ")}; title reads: ${reads}`,
+        `  press to filmography (ms): ${times.map((t) => t.data).join(", ")}; title reads: ${reads}`,
       );
     });
     await mark("prepared navigation to five people", async () => {
@@ -410,9 +456,9 @@ try {
         await page.locator(".person-card").first().waitFor();
       }
       console.log(
-        `  prepared click to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
+        `  prepared press to destination paint opportunity (ms): ${times.map((t) => t.shell).join(", ")}`,
       );
-      console.log(`  prepared click to filmography (ms): ${times.map((t) => t.data).join(", ")}`);
+      console.log(`  prepared press to filmography (ms): ${times.map((t) => t.data).join(", ")}`);
     });
     await mark("cached neighbour graph with its direct API response blocked", async () => {
       let release!: () => void;
@@ -431,7 +477,7 @@ try {
         const timing = await openPerson(0);
         await page.locator('.detail-page[data-content-ready="true"]').waitFor();
         console.log(
-          `  cached graph click to destination / filmography (ms): ${timing.shell} / ${timing.data}`,
+          `  cached graph press to destination / filmography (ms): ${timing.shell} / ${timing.data}`,
         );
       } finally {
         release();
@@ -517,10 +563,11 @@ try {
         },
         { lists: listCount, perList: 40, tags: 200 },
       );
-      for (const path of ["/lists", `/lists/${listIds[0]}`, "/activity", "/profile", "/"]) {
-        await page.goto(`${origin}${path}`);
-        await page.waitForTimeout(3500);
-      }
+      // Keep the accumulated client DB: reloads hid the cost of navigating a long session.
+      await primaryNavigation();
+      await page.getByRole("link", { name: "Collections", exact: true }).first().click();
+      await page.locator(`a.list-card[href="/lists/${listIds[0]}"]`).click();
+      await page.locator(".list-entry").first().waitFor();
     });
     await mark("lists and search", async () => {
       await page.goto(`${origin}/lists`);

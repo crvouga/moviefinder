@@ -6,6 +6,14 @@ Run `bun install --frozen-lockfile` once. `bun run check` uses Vite+ for formatt
 
 `bun run build && bun run test:e2e` verifies the real compiled UI against Bun/Hono, persisted Better Auth, isolated embedded PostgreSQL, and deterministic TMDB fixtures. Install the matching browser with `bun x playwright install chromium` when necessary. Mobile and desktop projects cover registration, session reload, tags, catalog navigation, list editing, profile updates, searching, and cross-user SSE/reconnect. Browser failure evidence stays in ignored test-results; it contains test accounts only.
 
+Cold-navigation coverage reloads with the bootstrap snapshot and all data APIs blocked, leaving
+the client DB empty. It then holds enrichment animation callbacks and activates every primary
+navigation link, verifying the destination heading appears before its live queries mount.
+Separate checks cover cached detail graphs, blocked images, back/forward, search edits and filters.
+A production-browser check measures pointer/keyboard input through the destination's next rendering
+opportunity under 4× CPU throttling, with bootstrap and all data APIs held. Every primary destination
+must stay below 100 ms and request no additional screen scripts.
+
 Unit/property coverage exercises canonical identity, missing-field normalization, credit/season/episode links, canonical serialization, compound filter/cursor validation, permissions, dense ordering keys, redirect safety, replay revision gating, and upstream Retry-After/errors.
 
 Integration coverage uses real transactions for authentication tables, unauthorized APIs/origins, field independence, operation deduplication, list permissions/invitations, concurrent additions/moves, public copies, audience-filtered replay, cache-first query hydration, durable request deduplication, preservation of hydrated source data, and transactional snapshots.

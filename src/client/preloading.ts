@@ -37,6 +37,39 @@ function canPredict() {
   );
 }
 
+// Preparation must never execute inside an input handler. Let the browser run pending input
+// and rendering first; abandoned interests also cancel work that has not started yet.
+function schedulePreparation(work: () => void, signal: AbortSignal) {
+  if (signal.aborted) return;
+  const scheduler = (
+    window as Window & {
+      scheduler?: {
+        postTask(
+          work: () => void,
+          options: { priority: "background"; signal: AbortSignal },
+        ): Promise<unknown>;
+      };
+    }
+  ).scheduler;
+  if (scheduler?.postTask) {
+    void scheduler.postTask(work, { priority: "background", signal }).catch(() => {});
+    return;
+  }
+  const run = () => {
+    signal.removeEventListener("abort", cancel);
+    if (!signal.aborted) work();
+  };
+  const idle = typeof window.requestIdleCallback === "function";
+  const handle = idle
+    ? window.requestIdleCallback(run, { timeout: 1000 })
+    : window.setTimeout(run, 0);
+  const cancel = () => {
+    if (idle) window.cancelIdleCallback(handle);
+    else window.clearTimeout(handle);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+}
+
 // Optional background preparation warms canonical data and artwork. Route changes never await it.
 export function prepareScreen(
   href: string,
@@ -186,12 +219,17 @@ async function prepareArtwork(
 export function preloadTitles(ids: string[], userId: string, settle = 450) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
-    if (!canPredict()) return;
-    track("preload", "titles", { count: Math.min(ids.length, 2) });
-    for (const id of ids.slice(0, 2))
-      void prepareScreen(`/title/${encodeURIComponent(id)}`, userId, controller.signal, true).catch(
-        () => {},
-      );
+    schedulePreparation(() => {
+      if (!canPredict()) return;
+      track("preload", "titles", { count: Math.min(ids.length, 2) });
+      for (const id of ids.slice(0, 2))
+        void prepareScreen(
+          `/title/${encodeURIComponent(id)}`,
+          userId,
+          controller.signal,
+          true,
+        ).catch(() => {});
+    }, controller.signal);
   }, settle);
   return () => {
     clearTimeout(timer);
@@ -231,8 +269,10 @@ export function startNavigationPreloading(userId: string) {
     reason: string,
     speculative = true,
   ) => {
-    track("preload", reason, { path: localURL(href)?.pathname ?? "" });
-    void prepareScreen(href, userId, controller.signal, speculative).catch(() => {});
+    schedulePreparation(() => {
+      track("preload", reason, { path: localURL(href)?.pathname ?? "" });
+      void prepareScreen(href, userId, controller.signal, speculative).catch(() => {});
+    }, controller.signal);
   };
   const drop = (link: HTMLAnchorElement) => {
     const intent = intents.get(link);
@@ -283,6 +323,7 @@ export function startNavigationPreloading(userId: string) {
     intent.expiry = setTimeout(() => drop(link), 120);
   };
   let predictionTimer: ReturnType<typeof setTimeout> | undefined;
+  let predictionTask: AbortController | undefined;
   let navigating = false;
   const predict = () => {
     if (navigating || !canPredict()) return;
@@ -335,7 +376,10 @@ export function startNavigationPreloading(userId: string) {
   };
   const schedulePrediction = () => {
     clearTimeout(predictionTimer);
-    predictionTimer = setTimeout(predict, 500);
+    predictionTask?.abort();
+    const task = new AbortController();
+    predictionTask = task;
+    predictionTimer = setTimeout(() => schedulePreparation(predict, task.signal), 500);
   };
   const observer = new MutationObserver((records) => {
     if (
@@ -357,6 +401,7 @@ export function startNavigationPreloading(userId: string) {
   const visibility = () => {
     if (document.hidden) {
       clearTimeout(predictionTimer);
+      predictionTask?.abort();
       for (const link of intents.keys()) drop(link);
       for (const controller of predictions.values()) controller.abort();
       predictions.clear();
@@ -368,6 +413,7 @@ export function startNavigationPreloading(userId: string) {
   const dispose = () => {
     observer.disconnect();
     clearTimeout(predictionTimer);
+    predictionTask?.abort();
     for (const link of intents.keys()) drop(link);
     for (const controller of predictions.values()) controller.abort();
     events.forEach((type) => document.removeEventListener(type, enter, true));
@@ -380,6 +426,7 @@ export function startNavigationPreloading(userId: string) {
     pause: () => {
       navigating = true;
       clearTimeout(predictionTimer);
+      predictionTask?.abort();
     },
     resume: () => {
       navigating = false;

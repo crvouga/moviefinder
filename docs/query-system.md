@@ -21,17 +21,25 @@ are bundled up front; routes have no asynchronous data or artwork loaders. Click
 and filter/search URL changes commit independently of API, provider, or image readiness. The
 destination renders cached canonical data immediately, or its structural placeholder when uncached.
 Missing data and artwork arrive asynchronously through page effects and SSE. Failed cold detail
-reads offer a retry on the destination. Detail pages first commit a lightweight cached heading and
-artwork, then schedule the larger live graph after the first rendering opportunity in an
-interruptible React transition. Partial cached matches never imply complete provider coverage.
+reads offer a retry on the destination. Every application screen first commits a lightweight
+destination heading, using canonical cached list/profile names when available. Detail previews
+also show cached artwork. The shared screen boundary schedules live queries, derived indexes,
+and larger content after the first rendering opportunity in an interruptible React transition;
+it cancels pending frames when navigating away. Search/filter changes within a screen preserve
+its controls and input. The root subscribes only to authentication-route changes, keeping shared
+collection hooks and indexes out of pathname navigation. Partial cached matches never imply
+complete provider coverage.
 
 Prediction starts after the screen/scroll has settled for 500 ms. It prepares primary navigation
 once per session and at most two visible content destinations. Discovery separately prepares its
 current and next title after resting for 450 ms, and requests the next result page twelve slides
 before the end. All speculative data reads share a three-request budget. Predictions pause while a
 navigation is pending; hidden tabs, Save-Data and 2G connections suppress automatic prediction.
-Keyboard focus and a 350 ms hover prepare the intended destination; primary press-down starts a
-foreground read immediately. Moving across a grid quickly starts no intent requests. Destination
+Keyboard focus, a 350 ms hover and primary press-down schedule preparation outside the input
+handler. Preparation and viewport scans use browser background-priority tasks, with idle callbacks
+or a timer as fallbacks; pending work is cancellable. A primary press requests foreground network
+priority when its preparation starts, while navigation proceeds independently. Moving across a
+grid quickly starts no intent requests. Destination
 data effects join in-flight work and bypass the speculative request budget. Abandoned interests cancel browser reads
 when no other consumer needs them; durable shared hydration continues on the server.
 
@@ -79,7 +87,9 @@ credits/related titles, seasons and episode stills with at most 24 image interes
 their own neighbouring images wait for direct interest.
 The existing responsive resolver, cancellation, priority and bounded decoded-image cache still apply.
 
-Detail HTTP reads start on the first destination commit, before the deferred full graph mounts.
+Destination detail HTTP reads start after the preview's first rendering opportunity, so a fast
+response and its synchronous collection commit cannot delay opening the page. Optional preparation
+can already have a read in flight; the destination adopts it independently of navigation.
 Keyed live queries use synchronous reads of the same canonical collections while establishing their
 subscriptions, avoiding empty cast/genre/card frames when the data is already present. Source
 `graphVersion` metadata distinguishes loaded relations from a newer summary announcement. Identical

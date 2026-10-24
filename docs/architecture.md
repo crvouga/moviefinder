@@ -27,7 +27,7 @@ Commands create TanStack DB optimistic transactions, enter a per-resource reques
 
 List-shaped responses (feeds, the bootstrap snapshot, saved lists and SSE events) carry titles as summaries: scalar fields only, marked `data.summary`. Relations, credits and other collections arrive with the detail view, whose graph is bounded (100 cast, 40 crew, 30 guests, 300 filmography entries); the source JSON keeps everything. A summary never replaces relations the client already holds, and a screen showing a title re-reads it when its subscription changes. Without this, one long-running series put 16,000 entities (4 MB) into every feed response and froze the interface for seconds.
 
-Discovery mounts only neighboring virtual slides. Poster dimensions are reserved and at most two upcoming posters are explicitly prefetched after the feed rests. Artwork resolution is chosen by the image module below. Feed positions are transient session UI state. Detail and social pages are code-split.
+Discovery mounts only neighboring virtual slides. Poster dimensions are reserved and at most two upcoming posters are explicitly prefetched after the feed rests. Artwork resolution is chosen by the image module below. Feed positions are transient session UI state. All route components ship in the initial bundle. Screens commit a lightweight destination before mounting live queries and larger content after a rendering opportunity. Only the outlet and active navigation subscribe to pathname changes; navigation does not rerun the root's shared collection hooks and indexes.
 
 ## Images
 
