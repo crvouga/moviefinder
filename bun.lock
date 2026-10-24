@@ -16,6 +16,7 @@
         "drizzle-orm": "0.45.4",
         "fractional-indexing": "4.0.0",
         "hono": "4.13.13",
+        "jose": "6.2.12",
         "lucide-react": "1.57.0",
         "pg": "8.23.1",
         "radix-ui": "1.8.1",
@@ -26,6 +27,7 @@
         "zod": "4.6.7",
       },
       "devDependencies": {
+        "@crvouga/mockingbird-service-oauth": "3.11.0",
         "@playwright/test": "1.64.1",
         "@tailwindcss/vite": "4.3.3",
         "@types/bun": "1.4.3",
@@ -42,7 +44,14 @@
     },
   },
   "trustedDependencies": [
+    "@embedded-postgres/darwin-x64",
     "@embedded-postgres/darwin-arm64",
+    "@embedded-postgres/linux-x64",
+    "@embedded-postgres/linux-arm",
+    "@embedded-postgres/linux-ia32",
+    "@embedded-postgres/linux-ppc64",
+    "@embedded-postgres/linux-arm64",
+    "@embedded-postgres/windows-x64",
   ],
   "packages": {
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
@@ -70,6 +79,10 @@
     "@better-fetch/fetch": ["@better-fetch/fetch@1.3.2", "", {}, "sha512-Gs7n99b5tqUC6cQAPbV0uED3IraHB6xQbHLQ/C3l7ZFafHScOx9pQ+DYmP5blbLFShVWLqxNUlI9wi4xU/X+ow=="],
 
     "@blazediff/core": ["@blazediff/core@1.10.0", "", {}, "sha512-AOQff0zgR7cGsZL+4E7hVkmujoPUpm0J9xzWGWZj5wCjd3gmxESXAPfKyuzs93VdpQNFhHlBhfOjrcZ+XTERtQ=="],
+
+    "@crvouga/mockingbird-service-oauth": ["@crvouga/mockingbird-service-oauth@3.11.0", "", { "dependencies": { "@crvouga/mockingbird-service-sqlite": "3.4.0" }, "bin": { "mockingbird-oauth": "dist/cli.js" } }, "sha512-WUPeM0PwrUI/KP2tKYA+7QDLeBMAPqghEzfBntVNMu66WyeZqEdLX4SVQHe9RlF6D4N6tkdwD/+/KD9+nrHU0Q=="],
+
+    "@crvouga/mockingbird-service-sqlite": ["@crvouga/mockingbird-service-sqlite@3.4.0", "", { "bin": { "mockingbird-sqlite": "dist/socket/cli.js" } }, "sha512-NKq8K14BaHp3wtM5yq/8kVtpbb5SjKhIApQNo6zKfmHvP0jGHgaOgvX/glmaHE7hcEoUF4k1qbEwFa3NvG0NyQ=="],
 
     "@embedded-postgres/darwin-arm64": ["@embedded-postgres/darwin-arm64@18.4.0-beta.17", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Kg1ZMNFzkVIJs3g4V2UYEc5X005km9rGinxFBH8R1sOU2Rblvz4pt2Uf93Pu8Rk273Ue9HIdrbMPpgUqwjUi0Q=="],
 

@@ -1,3 +1,5 @@
+import { startGoogle, type GoogleTestProvider } from "../tests/fixtures/google";
+import { completeGoogleSignIn, setTestUsername } from "../tests/fixtures/google-browser";
 import { chromium } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,6 +70,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let activePage: Awaited<ReturnType<NonNullable<typeof browser>["newPage"]>> | undefined;
 let closeApplication = async () => {};
 let exitCode = 0;
+let google: GoogleTestProvider | undefined;
 try {
   database = await openLocalDatabase(directory);
   await migrateLocalDatabase(database.url);
@@ -196,15 +199,17 @@ try {
     type === "tv" ? { number_of_seasons: 1, seasons: [] } : movieDetail;
   const [apiPort, webPort] = [await freePort(), await freePort()];
   const origin = `http://localhost:${webPort}`;
+  google = await startGoogle(origin);
   const service = createApplication(
     db,
     readConfig({
+      ...google.config,
       DATABASE_URL: database.url,
       BETTER_AUTH_SECRET: "performance-runs-only-long-isolated-secret-12345",
       MOVIEFINDER_ORIGIN: origin,
       MOVIEFINDER_TELEMETRY_DIR: telemetry,
       PORT: String(apiPort),
-      NODE_ENV: "development",
+      NODE_ENV: "test",
     }),
     upstream,
   );
@@ -254,13 +259,9 @@ try {
   };
   await mark("register and first discover render", async () => {
     await page.goto(`${origin}/`);
-    await page.getByRole("button", { name: /Make yourself at home/ }).click();
     const suffix = crypto.randomUUID().slice(0, 8);
-    await page.getByLabel("Display name", { exact: true }).fill("Perf Friend");
-    await page.getByLabel("Username", { exact: true }).fill(`perf_${suffix}`);
-    await page.getByLabel("Email address").fill(`perf_${suffix}@example.test`);
-    await page.getByLabel("Password", { exact: true }).fill("a-strong-performance-password");
-    await page.getByRole("button", { name: "Create your account" }).click();
+    await completeGoogleSignIn(page, { name: "Perf Friend", email: `perf_${suffix}@example.test` });
+    await setTestUsername(page, "Perf Friend", `perf_${suffix}`);
     await page.locator(".discovery-slide").first().waitFor({ timeout: 60000 });
   });
   await page.waitForTimeout(3000);
@@ -599,6 +600,7 @@ try {
   exitCode = 1;
 } finally {
   await browser?.close().catch(() => {});
+  await google?.close();
   await closeApplication();
   for (const child of children) child.kill("SIGTERM");
   await server?.stop(true);

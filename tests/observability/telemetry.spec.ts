@@ -1,3 +1,4 @@
+import { completeGoogleSignIn, setTestUsername } from "../fixtures/google-browser";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { test, expect } from "@playwright/test";
@@ -12,7 +13,6 @@ test("local browsing produces private, correlated browser → API → SQL → wo
   const directory = process.env.MOVIEFINDER_TELEMETRY_DIR!;
   const suffix = crypto.randomUUID().slice(0, 8);
   const email = `canary_${suffix}@example.test`,
-    password = `canary-password-${suffix}`,
     query = `canary-query-${suffix}`;
   await page.route("https://image.tmdb.org/**", (route) =>
     route.fulfill({
@@ -22,12 +22,8 @@ test("local browsing produces private, correlated browser → API → SQL → wo
   );
   await page.goto("/");
   await expect(page).toHaveURL(/\/auth/);
-  await page.getByRole("button", { name: /Make yourself at home/ }).click();
-  await page.getByLabel("Display name", { exact: true }).fill(`canary-name-${suffix}`);
-  await page.getByLabel("Username", { exact: true }).fill(`canary_${suffix}`);
-  await page.getByLabel("Email address").fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Create your account" }).click();
+  await completeGoogleSignIn(page, { name: `canary-name-${suffix}`, email });
+  await setTestUsername(page, `canary-name-${suffix}`, `canary_${suffix}`);
   await expect(page.locator(".swiper-slide-active .slide-title h2")).toBeVisible({
     timeout: 15000,
   });
@@ -278,7 +274,7 @@ test("local browsing produces private, correlated browser → API → SQL → wo
   expect(report.preload.completed).toBeGreaterThan(0);
   expect(report.preload.cancelled).toBeGreaterThan(0);
   const raw = await readFile(join(directory, "events.ndjson"), "utf8");
-  for (const canary of [email, password, query, `canary-name-${suffix}`, `canary_${suffix}`])
+  for (const canary of [email, query, `canary-name-${suffix}`, `canary_${suffix}`])
     expect(raw).not.toContain(canary);
   const cli = await promisify(execFile)("bun", ["scripts/telemetry.ts", "bottlenecks", "--json"], {
     env: { ...process.env, MOVIEFINDER_TELEMETRY_DIR: directory },

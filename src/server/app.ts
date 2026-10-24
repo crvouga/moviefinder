@@ -114,8 +114,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
   root.get("/api/health", (c) => c.json({ status: "ok", service: "moviefinder" }));
   root.get("/api/auth-options", (c) =>
     c.json({
-      recovery: !!config.RESEND_API_KEY && !!config.EMAIL_FROM,
-      google: !!config.MOVIEFINDER_GOOGLE_CLIENT_ID && !!config.MOVIEFINDER_GOOGLE_CLIENT_SECRET,
+      google: !!config.MOVIEFINDER_OIDC_ISSUER && !!config.MOVIEFINDER_OIDC_CLIENT_ID,
     }),
   );
   root.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));

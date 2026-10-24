@@ -9,7 +9,7 @@ Development uses the same API with Vite+'s relative-origin proxy. `scripts/dev.t
 ## Server boundaries
 
 - `db/schema.ts`: Drizzle mapping of the allocated PostgreSQL schema, including Better Auth tables. SQL migration/schema files are authoritative.
-- `auth.ts`: Better Auth's Drizzle adapter, persisted sessions, password recovery delivery, optional OAuth. No custom password storage.
+- `auth.ts`: Better Auth's Drizzle adapter and persisted sessions, with credential registration/login/recovery endpoints disabled. Google through the shared relay is the sole sign-in method. `auth-relay.ts` supplies the shared relay's public OIDC code/S256 PKCE provider using Better Auth's authorization helpers and JOSE signature/claim validation, with exact issuer/client/callback binding, database-consumed state and independent per-flow browser cookies. No custom password storage. See [relay setup](auth-relay.md).
 - `entity-store`: canonical source records, checksums, provenance/freshness, deterministic projection normalizers.
 - `entity-store-sync`: upstream HTTP, discovery/search/detail ingestion, durable leases and retry schedules.
 - `queries`: Zod parameter validation, identities/cursors, immediate cache reads, normalization, and scheduling of missing/stale coverage.

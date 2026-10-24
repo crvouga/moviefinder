@@ -1,14 +1,15 @@
 import { test, expect, type Page } from "@playwright/test";
+import { completeGoogleSignIn, setTestUsername } from "../fixtures/google-browser";
 async function register(page: Page, destination = "/") {
   await page.goto(destination);
   await expect(page).toHaveURL(/\/auth/);
-  await page.getByRole("button", { name: /Make yourself at home/ }).click();
   const suffix = crypto.randomUUID().slice(0, 8);
-  await page.getByLabel("Display name", { exact: true }).fill("Cinema Friend");
-  await page.getByLabel("Username", { exact: true }).fill(`friend_${suffix}`);
-  await page.getByLabel("Email address").fill(`friend_${suffix}@example.test`);
-  await page.getByLabel("Password", { exact: true }).fill("a-strong-browser-test-password");
-  await page.getByRole("button", { name: "Create your account" }).click();
+  await completeGoogleSignIn(page, {
+    name: "Cinema Friend",
+    email: `friend_${suffix}@example.test`,
+  });
+  await setTestUsername(page, "Cinema Friend", `friend_${suffix}`);
+  await page.reload();
   if (destination === "/") {
     await expect(page.getByRole("heading", { name: "Find your next obsession." })).toBeVisible();
     await expect(page.locator(".discovery-slide").first()).toBeVisible();
