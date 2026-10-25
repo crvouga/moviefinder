@@ -2,7 +2,7 @@
 
 MovieFinder uses the shared Google-to-OIDC relay described in the [consumer guide](https://www.chrisvouga.dev/llms.txt) and its [current source](https://github.com/crvouga/workspace/blob/main/llms.txt#6-auth-relay-google-sign-in). Current canonical inventory declares `enabled: true`, `live: true`, with status `preproduction`. Nonproduction discovery returned HTTP 200 with the expected issuer. These observations do not establish production acceptance; consult the platform's [acceptance record](https://github.com/crvouga/workspace/blob/main/packages/auth-relay/acceptance.md).
 
-MovieFinder receives no Google credentials, relay manager/setup credentials or OIDC client secret. The existing MovieFinder auth secret continues to secure its own sessions. Google is the only authentication method. Missing relay settings leave sign-in unavailable; there is no password fallback. Password registration, email/username sign-in and password recovery endpoints are disabled on the server. Partial or environment-mismatched OIDC configuration fails startup.
+MovieFinder receives no Google credentials, relay manager/setup credentials or OIDC client secret. The existing MovieFinder auth secret continues to secure its own sessions. Google is the only authentication method. Missing relay settings fail production startup; development may start with sign-in unavailable. There is no password fallback. Password registration, email/username sign-in and password recovery endpoints are disabled on the server. Partial or environment-mismatched OIDC configuration fails startup.
 
 ## Registration and runtime configuration
 

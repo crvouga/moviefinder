@@ -17,7 +17,7 @@ The local launcher always supplies its own database URL, overriding any shared `
 
 Production requires `DATABASE_URL` and the platform-generated `MOVIEFINDER_AUTH_SECRET` (the existing `BETTER_AUTH_SECRET` remains supported for local compatibility); local development generates its database connection and still requires `BETTER_AUTH_SECRET`. Production also requires the app-specific `MOVIEFINDER_ORIGIN`. `TMDB_API_READ_ACCESS_TOKEN` enables catalog refresh; cached content remains usable during an upstream outage. `.env.example` lists variable names without values. Never reuse another application's authentication base URL.
 
-Google is the only sign-in method. Password registration, password sign-in and recovery endpoints are disabled on the backend. Google login uses the shared auth relay, with public `MOVIEFINDER_OIDC_ISSUER` and `MOVIEFINDER_OIDC_CLIENT_ID` settings from an approved relay registration. MovieFinder never receives Google credentials or an OIDC client secret. See [Google sign-in setup](docs/auth-relay.md) for registration, exact callbacks, local ports and verification limits.
+Google is the only sign-in method. Password registration, password sign-in and recovery endpoints are disabled on the backend. Google login uses the shared auth relay, with public `MOVIEFINDER_OIDC_ISSUER` and `MOVIEFINDER_OIDC_CLIENT_ID` settings from an approved relay registration. Both settings are required at production startup. MovieFinder never receives Google credentials or an OIDC client secret. See [Google sign-in setup](docs/auth-relay.md) for registration, exact callbacks, local ports and verification limits.
 
 When registration settings are saved in ignored `.local/auth-relay.json`, ordinary `bun run dev` configures Google automatically and retains the registered port. Live Google-backed sign-in has been verified locally; see the setup guide for registration expiry and renewal requirements.
 
@@ -69,7 +69,7 @@ See [architecture](docs/architecture.md), [entity store](docs/entity-store.md), 
 
 ## Deployment status
 
-The application is prepared for the shared GHCR/Railway workflow. **It has not been deployed to shared infrastructure.** At implementation time, the inventory contains older MovieFinder services belonging to other repositories, but no service or explicit schema allocation for `crvouga/moviefinder`. Shared migrations are intentionally unapplied. See [infrastructure](docs/infrastructure.md) for the prepared integration contract and external requirements.
+The shared inventory records the `moviefinder` service for `crvouga/moviefinder`, its `moviefinder` schema allocation, and `https://moviefinder.chrisvouga.dev`. A production deployment already exists; its health response alone does not verify Google-only sign-in. The inventory checked on 2026-10-25 does not yet include the public OIDC settings required by the new production startup guard. An approved production relay registration and platform configuration are rollout prerequisites. See [infrastructure](docs/infrastructure.md) and [Google sign-in setup](docs/auth-relay.md).
 
 Local development is ready independently of these production allocation requirements. Build the container with `docker build -t moviefinder:verification .`. Runtime secrets are supplied as environment variables, never build arguments. `/health` is public and independent of PostgreSQL. `/api/ready` and `/api/metrics` require authentication. See the infrastructure document before attempting rollout.
 

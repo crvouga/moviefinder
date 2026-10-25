@@ -27,6 +27,10 @@ export function readConfig(env: Record<string, string | undefined>) {
   const { MOVIEFINDER_OIDC_ISSUER: issuer, MOVIEFINDER_OIDC_CLIENT_ID: clientId } = result.data;
   if (!!issuer !== !!clientId)
     throw new Error("MOVIEFINDER_OIDC_ISSUER and MOVIEFINDER_OIDC_CLIENT_ID must be set together");
+  if (result.data.NODE_ENV === "production" && !issuer)
+    throw new Error(
+      "MOVIEFINDER_OIDC_ISSUER and MOVIEFINDER_OIDC_CLIENT_ID are required in production",
+    );
   if (issuer) {
     const url = new URL(issuer);
     if (new URL(result.data.MOVIEFINDER_ORIGIN).origin !== result.data.MOVIEFINDER_ORIGIN)

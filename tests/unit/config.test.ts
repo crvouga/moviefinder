@@ -6,6 +6,21 @@ const authEnv = {
   DATABASE_URL: "test",
   BETTER_AUTH_SECRET: "test-only-auth-secret-at-least-32-characters",
 };
+it("refuses a production server without its only sign-in provider", () => {
+  const production = {
+    ...authEnv,
+    NODE_ENV: "production",
+    MOVIEFINDER_ORIGIN: "https://moviefinder.chrisvouga.dev",
+  };
+  expect(() => readConfig(production)).toThrow("are required in production");
+  expect(
+    readConfig({
+      ...production,
+      MOVIEFINDER_OIDC_ISSUER: "https://auth.chrisvouga.dev/realms/projects",
+      MOVIEFINDER_OIDC_CLIENT_ID: "app-production-test",
+    }).MOVIEFINDER_OIDC_CLIENT_ID,
+  ).toBe("app-production-test");
+});
 it("requires complete relay configuration and isolates production from nonproduction", () => {
   expect(() => readConfig({ ...authEnv, MOVIEFINDER_OIDC_CLIENT_ID: "app-test" })).toThrow(
     "must be set together",
