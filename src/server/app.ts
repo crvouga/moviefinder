@@ -9,7 +9,8 @@ import { eq, sql, min } from "drizzle-orm";
 import { commandSchema, feedParams, sourceId, type EventEnvelope } from "../shared/contracts";
 import type { Config } from "./config";
 import type { Database } from "./db";
-import { createAuth } from "./auth";
+import type { Auth } from "./auth";
+import { createAuthForOrigins } from "./auth-origins";
 import { createQueries } from "./queries";
 import { createSync } from "./entity-store-sync";
 import { createTmdb, type Tmdb } from "./entity-store-sync/tmdb";
@@ -30,12 +31,12 @@ const telemetryBatch = z.object({
     .max(500),
 });
 export function createApplication(db: Database, config: Config, upstream?: Tmdb) {
-  const auth = createAuth(db, config),
+  const authForRequest = createAuthForOrigins(db, config),
     sync = createSync(db, upstream ?? createTmdb(config.TMDB_API_READ_ACCESS_TOKEN ?? "")),
     queries = createQueries(db, sync),
     social = socialQueries(db),
     shutdown = new AbortController();
-  const root = new Hono<{ Variables: { userId: string; requestId: string } }>();
+  const root = new Hono<{ Variables: { userId: string; requestId: string; auth: Auth } }>();
   root.use("*", async (c, next) => {
     const requestId = crypto.randomUUID(),
       start = performance.now();
@@ -117,14 +118,22 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
       google: !!config.MOVIEFINDER_OIDC_ISSUER && !!config.MOVIEFINDER_OIDC_CLIENT_ID,
     }),
   );
-  root.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+  root.on(["GET", "POST"], "/api/auth/*", async (c) => {
+    const instance = authForRequest(c.req.raw);
+    return instance
+      ? instance.auth.handler(c.req.raw)
+      : c.json({ error: "Untrusted request host" }, 403);
+  });
   root.use("/api/*", async (c, next) => {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const instance = authForRequest(c.req.raw);
+    if (!instance) return c.json({ error: "Untrusted request host" }, 403);
+    const session = await instance.auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: "Sign in to continue" }, 401);
+    c.set("auth", instance.auth);
     c.set("userId", session.user.id);
     if (
       !["GET", "HEAD", "OPTIONS"].includes(c.req.method) &&
-      c.req.header("Origin") !== config.MOVIEFINDER_ORIGIN
+      c.req.header("Origin") !== instance.origin
     )
       return c.json({ error: "Untrusted request origin" }, 403);
     c.header("Cache-Control", "private, no-store");
@@ -298,7 +307,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
           lastAuth = Date.now();
         while (!closed) {
           if (Date.now() - lastAuth > 30000) {
-            const active = await auth.api.getSession({ headers: c.req.raw.headers });
+            const active = await c.get("auth").api.getSession({ headers: c.req.raw.headers });
             if (!active) break;
             lastAuth = Date.now();
           }
@@ -330,7 +339,7 @@ export function createApplication(db: Database, config: Config, upstream?: Tmdb)
   return {
     app: root,
     api,
-    auth,
+    authForRequest,
     sync,
     stop() {
       shutdown.abort();

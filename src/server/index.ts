@@ -8,7 +8,7 @@ const config = readConfig(process.env);
 configureTelemetry(config.MOVIEFINDER_TELEMETRY_DIR);
 const { db, pool } = createDatabase(config.DATABASE_URL),
   service = createApplication(db, config);
-serveClient(service.app, service.auth);
+serveClient(service.app, service.authForRequest);
 const server = Bun.serve({
   hostname: "0.0.0.0",
   port: config.PORT,

@@ -20,7 +20,10 @@ const { db, pool } = createDatabase(databaseURL);
 const origin = "http://localhost:43117";
 const clientId = "app-moviefinder-fixture";
 const secret = "isolated-auth-relay-tests-only-at-least-32-characters";
-const codes = new Map<string, { nonce: string; challenge: string; claims: JWTPayload }>();
+const codes = new Map<
+  string,
+  { nonce: string; challenge: string; claims: JWTPayload; redirectURI: string }
+>();
 let server: Server;
 let issuer: string;
 let service: ReturnType<typeof createApplication>;
@@ -73,7 +76,7 @@ beforeAll(async () => {
           !flow ||
           challenge !== flow.challenge ||
           body.get("client_id") !== clientId ||
-          body.get("redirect_uri") !== `${origin}/api/auth/callback/auth-relay` ||
+          body.get("redirect_uri") !== flow.redirectURI ||
           body.has("client_secret") ||
           req.headers.authorization
         ) {
@@ -135,14 +138,14 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server?.close(() => resolve()));
   await pool.end();
 });
-async function begin(claims: JWTPayload = {}) {
-  const response = await service.app.request("/api/auth/sign-in/social", {
+async function begin(claims: JWTPayload = {}, target = service, targetOrigin = origin) {
+  const response = await target.app.request(`${targetOrigin}/api/auth/sign-in/social`, {
     method: "POST",
-    headers: { Origin: origin, "Content-Type": "application/json" },
+    headers: { Origin: targetOrigin, "Content-Type": "application/json" },
     body: JSON.stringify({
       provider: "auth-relay",
       callbackURL: "/lists/fixture?tab=items",
-      errorCallbackURL: `${origin}/auth?socialError=1`,
+      errorCallbackURL: `${targetOrigin}/auth?socialError=1`,
       disableRedirect: true,
     }),
   });
@@ -154,17 +157,18 @@ async function begin(claims: JWTPayload = {}) {
     nonce: authorize.searchParams.get("nonce")!,
     challenge: authorize.searchParams.get("code_challenge")!,
     claims,
+    redirectURI: authorize.searchParams.get("redirect_uri")!,
   });
   const cookie = response.headers
     .getSetCookie()
     .map((value) => value.split(";")[0])
     .join("; ");
-  return { authorize, state, code, cookie };
+  return { authorize, state, code, cookie, origin: targetOrigin };
 }
 type Flow = Awaited<ReturnType<typeof begin>>;
-function callback(flow: Flow, cookie = flow.cookie) {
-  return service.app.request(
-    `/api/auth/callback/auth-relay?state=${flow.state}&code=${flow.code}`,
+function callback(flow: Flow, cookie = flow.cookie, target = service) {
+  return target.app.request(
+    `${flow.origin}/api/auth/callback/auth-relay?state=${flow.state}&code=${flow.code}`,
     {
       headers: { Cookie: cookie },
     },
@@ -178,6 +182,98 @@ function sessionCookie(response: Response) {
     .join("; ");
 }
 describe("shared relay public OIDC code flow", () => {
+  it("supports both registered domains with independent sessions and exact callback/CSRF boundaries", async () => {
+    const extra = "http://localhost:43118";
+    const multi = makeService({ MOVIEFINDER_ADDITIONAL_ORIGINS: extra });
+    const previous = sessionCookie(await callback(await begin()));
+    try {
+      expect(
+        (await multi.app.request(`${origin}/api/state`, { headers: { Cookie: previous } })).status,
+      ).toBe(200);
+      const a = await begin({}, multi, origin),
+        b = await begin({}, multi, extra);
+      expect(a.authorize.searchParams.get("redirect_uri")).toBe(
+        `${origin}/api/auth/callback/auth-relay`,
+      );
+      expect(b.authorize.searchParams.get("redirect_uri")).toBe(
+        `${extra}/api/auth/callback/auth-relay`,
+      );
+      expect(a.cookie.split("=")[0]).not.toBe(b.cookie.split("=")[0]);
+      const primaryCookie = sessionCookie(await callback(a, a.cookie, multi));
+      const extraCookie = sessionCookie(await callback(b, b.cookie, multi));
+      for (const [host, cookie, other] of [
+        [origin, primaryCookie, extraCookie],
+        [extra, extraCookie, primaryCookie],
+      ]) {
+        expect(Boolean(cookie)).toBe(true);
+        expect(
+          (await multi.app.request(`${host}/api/state`, { headers: { Cookie: cookie! } })).status,
+        ).toBe(200);
+        expect(
+          (await multi.app.request(`${host}/api/state`, { headers: { Cookie: other! } })).status,
+        ).toBe(401);
+        expect(
+          (
+            await multi.app.request(`${host}/api/command`, {
+              method: "POST",
+              headers: {
+                Cookie: cookie!,
+                Origin: host === origin ? extra : origin,
+                "Content-Type": "application/json",
+              },
+              body: "{}",
+            })
+          ).status,
+        ).toBe(403);
+        // Matching origin reaches command validation; it is not rejected by CSRF.
+        expect(
+          (
+            await multi.app.request(`${host}/api/command`, {
+              method: "POST",
+              headers: { Cookie: cookie!, Origin: host!, "Content-Type": "application/json" },
+              body: "{}",
+            })
+          ).status,
+        ).toBe(400);
+      }
+      const cross = await begin({}, multi, extra);
+      const before = exchanges;
+      const wrongHost = await multi.app.request(
+        `${origin}/api/auth/callback/auth-relay?state=${cross.state}&code=${cross.code}`,
+        { headers: { Cookie: cross.cookie } },
+      );
+      expect(sessionCookie(wrongHost)).toBe("");
+      expect(exchanges).toBe(before);
+      expect(
+        (
+          await multi.app.request("https://unregistered.example/api/auth/sign-in/social", {
+            method: "POST",
+            headers: { Origin: extra, "X-Forwarded-Host": new URL(extra).host },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await multi.app.request(`${extra}/api/auth/sign-out`, {
+            method: "POST",
+            headers: { Cookie: extraCookie, Origin: extra, "Content-Type": "application/json" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (await multi.app.request(`${extra}/api/state`, { headers: { Cookie: extraCookie } }))
+          .status,
+      ).toBe(401);
+      expect(
+        (await multi.app.request(`${origin}/api/state`, { headers: { Cookie: primaryCookie } }))
+          .status,
+      ).toBe(200);
+    } finally {
+      multi.stop();
+    }
+  });
   it("advertises Google without credentials and establishes a persisted application session", async () => {
     expect(await (await service.app.request("/api/auth-options")).json()).toMatchObject({
       google: true,

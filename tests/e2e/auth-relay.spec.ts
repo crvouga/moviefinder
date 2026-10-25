@@ -1,4 +1,42 @@
 import { expect, test } from "@playwright/test";
+import { completeGoogleSignIn, setTestUsername } from "../fixtures/google-browser";
+
+test("both domains complete sign-in, preserve deep links and isolate sign-out", async ({
+  page,
+  context,
+}) => {
+  const suffix = crypto.randomUUID().slice(0, 8);
+  await page.goto("/lists");
+  await completeGoogleSignIn(page, {
+    name: "Primary Member",
+    email: `primary_${suffix}@example.test`,
+  });
+  await setTestUsername(page, "Primary Member", `primary_${suffix}`);
+  await expect(page).toHaveURL("http://127.0.0.1:5188/lists");
+  const alias = await context.newPage();
+  await alias.goto("http://localhost:5188/lists");
+  await expect(alias).toHaveURL(/\/auth\?returnTo=/);
+  // The mock provider retains its own SSO session across the two application hosts.
+  await alias.getByRole("button", { name: "Sign in with Google", exact: true }).click();
+  await alias.waitForURL("http://localhost:5188/lists");
+  await setTestUsername(alias, "Alias Member", `alias_${suffix}`);
+  await expect(alias).toHaveURL("http://localhost:5188/lists");
+  await alias.reload();
+  await expect(alias).toHaveURL("http://localhost:5188/lists");
+  expect(
+    (
+      await alias.request.post("http://localhost:5188/api/auth/sign-out", {
+        headers: { Origin: "http://localhost:5188" },
+        data: {},
+      })
+    ).status(),
+  ).toBe(200);
+  await alias.goto("http://localhost:5188/lists");
+  await expect(alias).toHaveURL(/\/auth\?returnTo=/);
+  await page.reload();
+  await expect(page).toHaveURL("http://127.0.0.1:5188/lists");
+  await alias.close();
+});
 
 test("shows only the official Google sign-in button with accessible keyboard focus", async ({
   page,

@@ -17,7 +17,7 @@ All TMDB HTTP requests belong in entity-store-sync. Preserve source JSON separat
 
 Preserve commit ordering of durable events and atomicity with mutations. Keep list edits item-based; never replace the whole ordering array. Verify permission boundaries on the backend.
 
-Secrets must never appear in source, output, images, artifacts, test evidence, or documentation. .vault.yaml contains only coordinates. Runtime configuration is environment-based. Production runs one Bun server and exposes one origin.
+Secrets must never appear in source, output, images, artifacts, test evidence, or documentation. .vault.yaml contains only coordinates. Runtime configuration is environment-based. Production runs one Bun server and accepts only its explicitly configured origins, with independent host-only authentication cookies and exact registered callbacks.
 
 ## PR attestations
 

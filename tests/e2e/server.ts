@@ -29,7 +29,8 @@ await db.transaction(async (tx) => {
   );
 });
 const origin = observing ? "http://127.0.0.1:5189" : "http://127.0.0.1:5188";
-const google = await startGoogle(origin);
+const additionalOrigins = observing ? [] : ["http://localhost:5188"];
+const google = await startGoogle(origin, additionalOrigins);
 const service = createApplication(
   db,
   readConfig({
@@ -37,6 +38,7 @@ const service = createApplication(
     DATABASE_URL: url,
     BETTER_AUTH_SECRET: "browser-tests-only-long-isolated-secret-12345",
     MOVIEFINDER_ORIGIN: observing ? "http://127.0.0.1:5189" : "http://127.0.0.1:5188",
+    MOVIEFINDER_ADDITIONAL_ORIGINS: additionalOrigins.join(","),
     PORT: "5188",
     NODE_ENV: "test",
   }),
@@ -48,7 +50,7 @@ const service = createApplication(
       : result;
   },
 );
-serveClient(service.app, service.auth);
+serveClient(service.app, service.authForRequest);
 service.sync.start();
 const server = Bun.serve({
   hostname: "127.0.0.1",

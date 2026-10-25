@@ -1336,7 +1336,7 @@ Consider the application complete only when these scenarios pass.
 ### Deployment
 
 - Local development uses one browser origin.
-- Production uses one Bun process and one public origin.
+- Production uses one Bun process with explicitly configured public origins. Each browser flow stays on one origin, with host-only cookies and its exact registered callback.
 - The Docker image builds reproducibly.
 - CI runs the required automated checks.
 - Atlas migrations are validated.

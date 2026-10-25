@@ -1,7 +1,7 @@
 import { resolve, extname } from "node:path";
 import type { Hono, Env } from "hono";
-import type { Auth } from "./auth";
-export function serveClient<E extends Env>(app: Hono<E>, auth: Auth) {
+import type { AuthForRequest } from "./auth-origins";
+export function serveClient<E extends Env>(app: Hono<E>, authForRequest: AuthForRequest) {
   const staticRoot = resolve("dist");
   app.get("*", async (c) => {
     if (c.req.path.startsWith("/api/")) return c.json({ error: "API route not found" }, 404);
@@ -16,7 +16,9 @@ export function serveClient<E extends Env>(app: Hono<E>, auth: Auth) {
       return c.notFound();
     }
     if (!c.req.path.startsWith("/auth")) {
-      const session = await auth.api.getSession({ headers: c.req.raw.headers });
+      const instance = authForRequest(c.req.raw);
+      if (!instance) return c.text("Untrusted request host", 403);
+      const session = await instance.auth.api.getSession({ headers: c.req.raw.headers });
       if (!session)
         return c.redirect(
           `/auth?returnTo=${encodeURIComponent(c.req.path + new URL(c.req.url).search)}`,

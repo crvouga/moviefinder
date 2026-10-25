@@ -34,6 +34,18 @@ Agent automation requires an exact platform-issued credential path/id and an app
 
 ## Authentication boundaries
 
+Production also supports `https://www.moviefinder.app` through the same service
+and client registration. `MOVIEFINDER_ORIGIN` remains
+`https://moviefinder.chrisvouga.dev`; set `MOVIEFINDER_ADDITIONAL_ORIGINS` to
+`https://www.moviefinder.app`. The production registration contains both exact
+`/api/auth/callback/auth-relay` URLs. The apex redirects to www and is not an
+authentication origin. Additional origins are comma-separated exact HTTPS
+origins, never wildcards, paths or origins inferred from forwarded headers.
+Each configured hostname selects its own Better Auth instance, origin-bound
+transaction keys and host-only cookie namespace. Existing primary-domain
+sessions remain valid; signing out on one hostname leaves the other session
+independent. Writes require the same origin as the request's configured host.
+
 The browser performs a top-level redirect. Better Auth generates random state, nonce and S256 verifier; each ten-minute transaction has its own signed HttpOnly, SameSite=Lax cookie and PostgreSQL record. Transaction identifiers bind issuer, client ID and exact application origin. The callback consumes the record atomically, refuses replay, and never retries a code exchange. Session/transaction cookies include the application name and an origin-derived instance namespace because localhost ports share cookies. Production cookies are Secure and host-only. The cookie namespace change requires existing browser sessions to sign in again once; persisted accounts remain usable.
 
 Discovery and JWKS caches have five-minute freshness bounds; unknown signing keys trigger JOSE's bounded refresh with a cooldown. Endpoint requests reject redirects and have ten-second timeouts. ID tokens require an RS256 signature, exact issuer/audience, expiry, issue time, per-flow nonce, stable subject and verified email. Client-submitted ID-token login, refresh grants and automatic account linking by email are disabled. The provider account key contains `(issuer, subject)`; email is a profile attribute. An existing password-era account sharing a Google email is never implicitly merged. Such accounts require a separately reviewed ownership migration; their credential endpoints remain disabled.
