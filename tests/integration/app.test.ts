@@ -825,6 +825,17 @@ describe("first-screen graph inclusion and scheduling", () => {
 it("wakes for each delayed hydration deadline instead of missing later interests", async () => {
   await db.delete(schema.jobs);
   const sync = createSync(db, fixtureUpstream);
+  const transaction: typeof db.transaction = db.transaction.bind(db);
+  let crossedDeadline = false;
+  const claim = vi.spyOn(db, "transaction").mockImplementation(async (callback, options) => {
+    const result = await transaction(callback, options);
+    if (Array.isArray(result) && result.length === 0 && !crossedDeadline) {
+      crossedDeadline = true;
+      // Force both deadlines to pass between an empty claim and its next-work lookup.
+      await new Promise((resolve) => setTimeout(resolve, 260));
+    }
+    return result;
+  });
   await sync.hydrate("tmdb:movie:89004", 80);
   await sync.hydrate("tmdb:movie:89005", 220);
   const started = Date.now();
@@ -838,8 +849,10 @@ it("wakes for each delayed hydration deadline instead of missing later interests
       { timeout: 3000, interval: 10 },
     );
     expect(Date.now() - started).toBeLessThan(700);
+    expect(crossedDeadline).toBe(true);
   } finally {
     sync.stop();
+    claim.mockRestore();
   }
 });
 

@@ -370,10 +370,12 @@ export function createSync(db: Database, tmdb: Tmdb) {
       else {
         // A single earliest-wake timer cannot cover every delayed interest. Once that wake
         // has fired, schedule the next actual deadline rather than sleeping past it.
+        // A deadline may pass after the claim query; keep overdue pending rows so
+        // that race schedules an immediate retry instead of the idle 800 ms poll.
         const [next] = await db
           .select({ runAt: jobs.runAt })
           .from(jobs)
-          .where(sql`${jobs.state} = 'pending' and ${jobs.runAt} > now()`)
+          .where(eq(jobs.state, "pending"))
           .orderBy(jobs.runAt)
           .limit(1);
         if (next) nextPoll = Math.min(nextPoll, Math.max(1, next.runAt.getTime() - Date.now()));
