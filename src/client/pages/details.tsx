@@ -1,5 +1,5 @@
 import { bindNavigation, currentNavigationContext, markNavigationContent } from "../telemetry";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { ArrowLeft, Star, Play, ArrowUpRight, Calendar, Clock } from "lucide-react";
 import { useEntity, useEntities, loadEntity, subscribeEntity, getEntity, report } from "../state";
@@ -7,6 +7,7 @@ import { Poster, Tags, TitleCard, External, ShowMore, usePaging } from "../compo
 import { Image } from "../components/image";
 import { entityImages } from "../images";
 import { Button } from "../components/ui/button";
+import { useScreenReady } from "../components/screen";
 import type { Entity } from "../../shared/contracts";
 const text = (value: unknown) =>
   typeof value === "string" || typeof value === "number" ? String(value) : "";
@@ -21,11 +22,13 @@ const ids = (value: unknown): string[] =>
 export function DetailPage({ userId }: { userId: string }) {
   const { id } = useParams({ strict: false }) as { id: string };
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const ready = useScreenReady();
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
-  // Start the read before mounting live graph queries, while the destination preview paints.
+  // Even a fast response can synchronously commit a large graph. Start the destination read
+  // after its preview has had a rendering opportunity, so that work cannot delay opening it.
   useEffect(() => {
+    if (!ready) return;
     const controller = new AbortController();
     bindNavigation(controller.signal, window.location.href);
     setFailed(false);
@@ -40,17 +43,7 @@ export function DetailPage({ userId }: { userId: string }) {
       controller.abort();
       unsubscribe();
     };
-  }, [id, attempt]);
-  useEffect(() => {
-    let second = 0;
-    const first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => startTransition(() => setReady(true)));
-    });
-    return () => {
-      cancelAnimationFrame(first);
-      cancelAnimationFrame(second);
-    };
-  }, []);
+  }, [id, attempt, ready]);
   if (ready)
     return (
       <DetailContent

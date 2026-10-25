@@ -9,7 +9,7 @@ Development uses the same API with Vite+'s relative-origin proxy. `scripts/dev.t
 ## Server boundaries
 
 - `db/schema.ts`: Drizzle mapping of the allocated PostgreSQL schema, including Better Auth tables. SQL migration/schema files are authoritative.
-- `auth.ts`: Better Auth's Drizzle adapter, persisted sessions, password recovery delivery, optional OAuth. No custom password storage.
+- `auth.ts`: Better Auth's Drizzle adapter and persisted sessions, with credential registration/login/recovery endpoints disabled. Google through the shared relay is the sole sign-in method. `auth-relay.ts` supplies the shared relay's public OIDC code/S256 PKCE provider using Better Auth's authorization helpers and JOSE signature/claim validation, with exact issuer/client/callback binding, database-consumed state and independent per-flow browser cookies. No custom password storage. See [relay setup](auth-relay.md).
 - `entity-store`: canonical source records, checksums, provenance/freshness, deterministic projection normalizers.
 - `entity-store-sync`: upstream HTTP, discovery/search/detail ingestion, durable leases and retry schedules.
 - `queries`: Zod parameter validation, identities/cursors, immediate cache reads, normalization, and scheduling of missing/stale coverage.
@@ -27,7 +27,7 @@ Commands create TanStack DB optimistic transactions, enter a per-resource reques
 
 List-shaped responses (feeds, the bootstrap snapshot, saved lists and SSE events) carry titles as summaries: scalar fields only, marked `data.summary`. Relations, credits and other collections arrive with the detail view, whose graph is bounded (100 cast, 40 crew, 30 guests, 300 filmography entries); the source JSON keeps everything. A summary never replaces relations the client already holds, and a screen showing a title re-reads it when its subscription changes. Without this, one long-running series put 16,000 entities (4 MB) into every feed response and froze the interface for seconds.
 
-Discovery mounts only neighboring virtual slides. Poster dimensions are reserved and at most two upcoming posters are explicitly prefetched after the feed rests. Artwork resolution is chosen by the image module below. Feed positions are transient session UI state. Detail and social pages are code-split.
+Discovery mounts only neighboring virtual slides. Poster dimensions are reserved and at most two upcoming posters are explicitly prefetched after the feed rests. Artwork resolution is chosen by the image module below. Feed positions are transient session UI state. All route components ship in the initial bundle. Screens commit a lightweight destination before mounting live queries and larger content after a rendering opportunity. Only the outlet and active navigation subscribe to pathname changes; navigation does not rerun the root's shared collection hooks and indexes.
 
 ## Images
 

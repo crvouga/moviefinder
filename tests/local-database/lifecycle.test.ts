@@ -1,3 +1,4 @@
+import { startGoogle, googleSignIn, type GoogleTestProvider } from "../fixtures/google";
 import { it, expect } from "vite-plus/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,14 +14,17 @@ import { fixtureUpstream } from "../fixtures/catalog";
 it("creates a migrated embedded database, persists registration across restarts, and stops only owned servers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "moviefinder-embedded-"));
   let first: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
+  let google: GoogleTestProvider | undefined;
   let second: Awaited<ReturnType<typeof openLocalDatabase>> | undefined;
   try {
     first = await openLocalDatabase(directory);
     await migrateLocalDatabase(first.url);
     const { db, pool } = createDatabase(first.url);
+    google = await startGoogle("http://localhost:5173");
     const service = createApplication(
       db,
       readConfig({
+        ...google.config,
         DATABASE_URL: first.url,
         BETTER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
         NODE_ENV: "test",
@@ -30,18 +34,12 @@ it("creates a migrated embedded database, persists registration across restarts,
     let userId: string;
     try {
       await assertDatabaseReady(db);
-      const result = await service.app.request("/api/auth/sign-up/email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Origin: "http://localhost:5173" },
-        body: JSON.stringify({
-          email: "embedded@example.test",
-          name: "Persistent local user",
-          username: "embedded_user",
-          password: "local-registration-test-only",
-        }),
+      const result = await googleSignIn(service, google, "http://localhost:5173", {
+        id: "embedded",
+        email: "embedded@example.test",
+        name: "Persistent local user",
       });
-      expect(result.status).toBe(200);
-      userId = (await result.json()).user.id;
+      userId = result.id;
       const attached = await openLocalDatabase(directory);
       expect(attached.url === first.url).toBe(true);
       await attached.stop();
@@ -78,6 +76,7 @@ it("creates a migrated embedded database, persists registration across restarts,
       "embedded loopback",
     );
   } finally {
+    await google?.close();
     await second?.stop();
     await first?.stop();
     await rm(directory, { recursive: true, force: true });

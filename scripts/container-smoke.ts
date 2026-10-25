@@ -20,6 +20,8 @@ try {
     MOVIEFINDER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
     DATABASE_URL: "postgres://unreachable:local-only@127.0.0.1:1/moviefinder_test?sslmode=disable",
     MOVIEFINDER_ORIGIN: "http://127.0.0.1:8080",
+    MOVIEFINDER_OIDC_ISSUER: "https://auth.chrisvouga.dev/realms/projects",
+    MOVIEFINDER_OIDC_CLIENT_ID: "app-container-smoke-test",
     PORT: "8080",
   };
   await docker(
@@ -38,6 +40,10 @@ try {
       "DATABASE_URL",
       "-e",
       "MOVIEFINDER_ORIGIN",
+      "-e",
+      "MOVIEFINDER_OIDC_ISSUER",
+      "-e",
+      "MOVIEFINDER_OIDC_CLIENT_ID",
       "-e",
       "PORT",
       image,

@@ -229,14 +229,14 @@ Support:
 - Logout.
 - Session restoration.
 - Session expiration.
-- Account recovery.
+- Google account recovery through Google; no application password recovery.
 - Profile editing.
 - Display names.
 - Usernames.
 - Avatars.
 - Public profiles.
 
-Use supported email-based authentication and social login options where credentials are available.
+Google is the sole authentication method, through the shared Google-to-OIDC relay. Create MovieFinder accounts on first verified Google sign-in. Disable application email/password registration, email/username password sign-in and password recovery endpoints. Use Google’s pre-approved button branding. Test authentication with Mockingbird’s Google OAuth emulator.
 
 Do not invent or hardcode provider credentials.
 

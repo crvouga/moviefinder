@@ -14,7 +14,7 @@ import {
 import { Film } from "lucide-react";
 import { authClient } from "./auth-client";
 import { rememberUser } from "./session";
-import { startSync, stopSync } from "./state";
+import { collections, startSync, stopSync } from "./state";
 import { startNavigationPreloading } from "./preloading";
 import { report } from "./notifications";
 import Navigation from "./components/navigation";
@@ -26,6 +26,8 @@ import { ListsPage, ListDetail } from "./pages/lists";
 import { ActivityPage, ProfilePage } from "./pages/social";
 import { Toast } from "./components/toast";
 import { ViewerProvider } from "./components/viewer";
+import { Screen } from "./components/screen";
+import { PageHeading } from "./components/common";
 import { track, telemetryEnabled, beginNavigation, resolveNavigation } from "./telemetry";
 
 const commit: ProfilerOnRenderCallback = (id, phase, actual, base) => {
@@ -50,16 +52,19 @@ function Profiled({ id, children }: { id: string; children: React.ReactNode }) {
 // All route components are available before the app becomes interactive. Navigation never
 // depends on downloading a screen chunk, data readiness, provider hydration or artwork.
 function Root() {
-  const location = useLocation(),
+  const isAuth = useLocation({ select: (location) => location.pathname.startsWith("/auth") }),
     navigate = useNavigate(),
-    session = authClient.useSession(),
-    isAuth = location.pathname.startsWith("/auth");
+    session = authClient.useSession();
   useEffect(() => {
     if (!session.isPending) rememberUser(session.data?.user.id);
   }, [session.isPending, session.data?.user.id]);
   useEffect(() => {
     if (!isAuth && !session.isPending && !session.data)
-      void navigate({ to: "/auth", search: { returnTo: location.href }, replace: true });
+      void navigate({
+        to: "/auth",
+        search: { returnTo: router.state.location.href },
+        replace: true,
+      });
   }, [session.isPending, session.data, isAuth]);
   useEffect(() => {
     if (session.data && !isAuth) void startSync(session.data.user.id).catch(report);
@@ -120,27 +125,73 @@ function Root() {
             <Navigation userId={session.data.user.id} />
           </Profiled>
         </Suspense>
-        <main className="app-main" id="main-content" data-route={location.pathname}>
-          <Suspense
-            fallback={
-              <div className="route-placeholder" aria-label="Opening this page">
-                <div className="skeleton-line wide" />
-                <div className="skeleton-line" />
-              </div>
-            }
-          >
-            <Profiled id="screen" key={location.pathname}>
-              <Outlet />
-            </Profiled>
-          </Suspense>
-        </main>
+        <MainContent />
         <Toast />
       </div>
     </ViewerProvider>
   );
 }
+// Only the outlet and active navigation subscribe to pathname changes. Opening a route must
+// not rerun the app-wide collection queries and indexes in ViewerProvider.
+function MainContent() {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  return (
+    <main className="app-main" id="main-content" data-route={pathname}>
+      <Suspense
+        key={pathname}
+        fallback={
+          <div className="route-placeholder" aria-label="Opening this page">
+            <div className="skeleton-line wide" />
+            <div className="skeleton-line" />
+          </div>
+        }
+      >
+        <Profiled id="screen">
+          <Outlet />
+        </Profiled>
+      </Suspense>
+    </main>
+  );
+}
 function useCurrentUser() {
   return authClient.useSession().data?.user.id ?? "";
+}
+function PageScreen({ children }: { children: React.ReactNode }) {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const userId = useCurrentUser();
+  const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const [eyebrow, title] =
+    segments[0] === "lists"
+      ? segments[1]
+        ? [
+            "A LITTLE COLLECTION OF GOOD STORIES",
+            collections.list.get(segments[1])?.title ?? "Collection",
+          ]
+        : ["GOOD TASTE IS BETTER SHARED", "A list for every kind of night."]
+      : segments[0] === "profile"
+        ? [
+            "A LIFE IN GOOD STORIES",
+            collections.user.get(segments[1] ?? userId)?.title ?? "Movie lover",
+          ]
+        : segments[0] === "activity"
+          ? ["A SHARED LOVE OF STORIES", "In good company."]
+          : segments[0] === "search"
+            ? ["FOLLOW YOUR CURIOSITY", "What are you in the mood for?"]
+            : ["A GOOD NIGHT STARTS HERE", "Find your next obsession."];
+  return (
+    <Screen
+      preview={
+        <div className="standard-page" data-screen-preview aria-busy="true">
+          {segments[0] === "lists" && segments[1] && <Link to="/lists">Back to collections</Link>}
+          <PageHeading eyebrow={eyebrow!} title={title!} />
+          <div className="skeleton-line wide" />
+          <div className="skeleton-line" />
+        </div>
+      }
+    >
+      {children}
+    </Screen>
+  );
 }
 const root = createRootRoute({
   component: Root,
@@ -156,23 +207,39 @@ const root = createRootRoute({
 const home = createRoute({
   getParentRoute: () => root,
   path: "/",
-  component: () => <Discover userId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <Discover userId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 const auth = createRoute({ getParentRoute: () => root, path: "/auth", component: AuthPage });
 const search = createRoute({
   getParentRoute: () => root,
   path: "/search",
-  component: SearchPage,
+  component: () => (
+    <PageScreen>
+      <SearchPage />
+    </PageScreen>
+  ),
 });
 const lists = createRoute({
   getParentRoute: () => root,
   path: "/lists",
-  component: () => <ListsPage userId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <ListsPage userId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 const list = createRoute({
   getParentRoute: () => root,
   path: "/lists/$listId",
-  component: () => <ListDetail userId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <ListDetail userId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 const detail = createRoute({
   getParentRoute: () => root,
@@ -182,17 +249,29 @@ const detail = createRoute({
 const activity = createRoute({
   getParentRoute: () => root,
   path: "/activity",
-  component: () => <ActivityPage userId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <ActivityPage userId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 const profile = createRoute({
   getParentRoute: () => root,
   path: "/profile",
-  component: () => <ProfilePage currentUserId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <ProfilePage currentUserId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 const publicProfile = createRoute({
   getParentRoute: () => root,
   path: "/profile/$userId",
-  component: () => <ProfilePage currentUserId={useCurrentUser()} />,
+  component: () => (
+    <PageScreen>
+      <ProfilePage currentUserId={useCurrentUser()} />
+    </PageScreen>
+  ),
 });
 function ScreenError() {
   const currentRouter = useRouter();

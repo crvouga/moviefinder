@@ -7,6 +7,7 @@ import { readConfig } from "../../src/server/config";
 import { createEntityStore } from "../../src/server/entity-store";
 import { serveClient } from "../../src/server/static";
 import { fixtureUpstream, movieDetail, television, fixtures } from "../fixtures/catalog";
+import { startGoogle } from "../fixtures/google";
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.endsWith("_test"))
   throw new Error("Disposable test database required");
@@ -27,9 +28,12 @@ await db.transaction(async (tx) => {
     "detail",
   );
 });
+const origin = observing ? "http://127.0.0.1:5189" : "http://127.0.0.1:5188";
+const google = await startGoogle(origin);
 const service = createApplication(
   db,
   readConfig({
+    ...google.config,
     DATABASE_URL: url,
     BETTER_AUTH_SECRET: "browser-tests-only-long-isolated-secret-12345",
     MOVIEFINDER_ORIGIN: observing ? "http://127.0.0.1:5189" : "http://127.0.0.1:5188",
@@ -65,6 +69,7 @@ const frontend = observing
 await frontend?.listen();
 async function stop() {
   await frontend?.close();
+  await google.close();
   stopTelemetry();
   service.stop();
   await server.stop(true);

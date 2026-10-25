@@ -274,3 +274,79 @@ discovery and detail pages. Native TypeScript, lint, formatting and all 67 unit 
 focused development performance run completed six open/type/close cycles with and without saved
 lists, no application errors, and 13–33 ms next-frame opportunities while editing at 4x CPU
 throttling. Those frame measurements exclude opening latency and simulated typing duration.
+
+Google sign-in now integrates with the shared auth relay as a public OIDC code/S256 PKCE
+client. It uses the existing Better Auth tables, signed ID-token validation, exact issuer/client/
+callback binding, per-tab cookies and atomic database state consumption. Provider identity is
+`(issuer, subject)`; email matches never merge accounts automatically. Cookies are namespaced by
+application origin, requiring one new sign-in for existing browser sessions. Local startup accepts
+an explicit `MOVIEFINDER_WEB_PORT` to preserve registered callbacks. See [setup](auth-relay.md).
+
+Validation on 2026-10-24: formatting, lint, native TypeScript and all 69 unit tests pass;
+62 isolated PostgreSQL integration cases and all 46 mobile/desktop Chromium browser cases pass;
+the production build passes. Relay fixtures use actual RS256 signing and verify rejected
+signatures/claims, concurrent tabs/replay, expired state, client/instance separation and session
+restoration after restart during provider outage. Browser Google-button/error cases stub the
+provider-start response; they do not establish a browser flow through live Google.
+
+The dev launcher also accepts returned public connection metadata from ignored
+`.local/auth-relay.json`, retaining the registered port and injecting OIDC settings automatically.
+Expired, malformed or nonlocal settings fail clearly. Formatting, lint, native TypeScript and
+all 72 unit tests pass after this addition; prior integration/browser/build results above remain
+the verification for the unchanged authentication flow.
+
+Live setup on 2026-10-24: the human completed the nonproduction relay's required initial operator
+claim. The operator session API confirmed authorization, and the authenticated same-origin
+registration API created a dedicated MovieFinder localhost client for this checkout. Readback
+confirmed the exact callback, immutable project/environment/instance and active registration.
+Returned public settings are saved only under ignored `.local/`; ordinary `bun run dev` now enables
+Google sign-in without extra environment variables and preserves the callback across restarts.
+This development registration expires on 2026-10-31 and must be renewed through the relay API.
+No agent credential, Google secret, setup credential or operator session was copied into MovieFinder.
+
+The super.engineering browser (Safari 18.5 / AppleWebKit 605.1.15 user agent) completed live
+Google-backed OIDC sign-in through the existing Google/relay session. MovieFinder confirmed a
+verified local user session and HTTP 200 from the protected state API. The application session
+survived both page reload and a full local server/database stop and restart. Signing out returned
+HTTP 200 and restored HTTP 401 on the protected API. A subsequent Google-backed sign-in restored
+the intended `/lists` destination and an authenticated session. No OAuth codes, tokens, cookies or
+personal profile data were recorded as evidence. The application is left running locally.
+
+A second separately registered localhost instance used a disposable embedded database and the
+same browser. It initially had no application session despite the first instance being signed in,
+then completed its own Google-backed sign-in and authenticated state request. Both sessions
+remained valid independently. Revoking only the temporary registration preserved its established
+local session under application policy; signing out there preserved the first instance's session.
+The temporary client was revoked through the operator API, its readback confirmed revocation,
+and its server, browser tab, database and local verification files were removed.
+
+Shared control-plane resources, policies, secrets and schema definitions were not changed. Only
+runtime relay application registration data was written via its authorized API. Production
+MovieFinder registration/configuration/deployment, fresh Google browser-profile consent,
+unrelated public domains, full browser compatibility and the relay's platform reliability gates
+remain unverified. Local live sign-in does not establish production readiness.
+
+The sign-in interface now offers Google only, following the browser annotation. Email/password
+registration, email and username password login, verification, password changes and recovery are
+disabled server-side, including old token-specific reset links. New accounts are created by
+verified Google sign-in. The page has one accessible action using Google's unmodified pre-approved
+light rectangular button asset, preserving its current colored logo, typography, padding and
+aspect ratio; focus and error/retry states remain visible on mobile and desktop.
+
+Authentication setup for application integration, database lifecycle, browser, observability and
+synthetic performance runs now uses pinned Mockingbird OAuth with its Google profile. Tests drive
+public S256 PKCE, the real callback and signed-token validation; browser flows complete the
+emulator's account creation and consent UI. No password fallback or test authentication bypass
+was added. Production/development still use the shared relay; the emulator is a development-only
+dependency and local HTTP issuers require test mode. The separate adversarial relay fixture
+continues to verify cryptographic rejection and replay handling.
+
+Validation after the Google-only change: formatting, lint, native TypeScript and 72 unit tests;
+70 isolated database integration tests; all 52 mobile/desktop Chromium browser cases; the embedded
+database persistence/shutdown test; and both mobile/desktop observability cases pass. The browser
+verification script also rebuilt the production bundle successfully. A fresh live relay sign-in
+from the redesigned button produced a verified MovieFinder session and HTTP 200 from its protected
+state API. Live credential and recovery endpoints returned HTTP 404. The app remains running at
+its registered localhost port, with the browser returned to the redesigned authentication page.
+Google branding is based on the published pre-approved asset; this does not claim Google's app
+verification or the shared relay's broader production acceptance.

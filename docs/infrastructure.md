@@ -12,20 +12,20 @@ The approved platform change must allocate the `moviefinder` schema in both deve
 
 ## Secrets and plain configuration
 
-| Name                             | Source / status                                                                                           | Purpose                                               |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| DATABASE_URL                     | Existing Vault personal/dev and personal/prd contract; approval pending workspace PR #84                  | Opaque PostgreSQL connection                          |
-| TMDB_API_READ_ACCESS_TOKEN       | Existing contract; development live read verified                                                         | Server-only TMDB requests                             |
-| MOVIEFINDER_AUTH_SECRET          | New generated Vault field proposed in workspace PR #84; legacy local BETTER_AUTH_SECRET remains supported | Project-specific session/auth cryptography            |
-| RESEND_API_KEY                   | Optional existing production key; absent in development                                                   | Password recovery email                               |
-| MOVIEFINDER_GOOGLE_CLIENT_ID     | Optional new registered app-specific key                                                                  | Google OAuth client                                   |
-| MOVIEFINDER_GOOGLE_CLIENT_SECRET | Optional new registered app-specific key                                                                  | Google OAuth secret                                   |
-| MOVIEFINDER_ORIGIN               | Plain environment; localhost:5173 for development, approved HTTPS origin for production                   | Better Auth origin/callback/CSRF                      |
-| MOVIEFINDER_DATABASE_ALLOCATION  | Plain confirmation of approved `moviefinder` allocation                                                   | Migration guard; not a substitute for actual approval |
-| EMAIL_FROM                       | Optional plain verified sender                                                                            | Recovery mail delivery                                |
-| PORT                             | Plain, 8080                                                                                               | Single public Bun port                                |
+| Name                            | Source / status                                                                                           | Purpose                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| DATABASE_URL                    | Existing Vault personal/dev and personal/prd contract; approval pending workspace PR #84                  | Opaque PostgreSQL connection                          |
+| TMDB_API_READ_ACCESS_TOKEN      | Existing contract; development live read verified                                                         | Server-only TMDB requests                             |
+| MOVIEFINDER_AUTH_SECRET         | New generated Vault field proposed in workspace PR #84; legacy local BETTER_AUTH_SECRET remains supported | Project-specific session/auth cryptography            |
+| MOVIEFINDER_OIDC_ISSUER         | Public setting from an approved shared relay registration                                                 | Environment-specific OIDC discovery                   |
+| MOVIEFINDER_OIDC_CLIENT_ID      | Public setting from the same registration                                                                 | Public S256 PKCE client; no client secret             |
+| MOVIEFINDER_ORIGIN              | Plain environment; localhost:5173 for development, approved HTTPS origin for production                   | Better Auth origin/callback/CSRF                      |
+| MOVIEFINDER_DATABASE_ALLOCATION | Plain confirmation of approved `moviefinder` allocation                                                   | Migration guard; not a substitute for actual approval |
+| PORT                            | Plain, 8080                                                                                               | Single public Bun port                                |
 
 Reuse shared keys where appropriate; do not copy another app's OAuth credentials or authentication URL. New key names and environment parity must be registered through the workspace OpenTofu Vault inputs/inventory. Never print values. Runtime fleet services receive declared secrets directly from OpenTofu; they do not fetch Vault at boot. Local scripts use the supported vault run wrapper.
+
+Google sign-in uses the shared relay's application registration API/UI, separately from infrastructure provisioning. [The setup guide](auth-relay.md) specifies the exact callback and public runtime settings. Registration credentials stay in tooling, outside the application process. Public OIDC settings belong in the service's plain `env` inventory after registration; this repository does not modify that shared control plane.
 
 ## Image and fleet contract
 

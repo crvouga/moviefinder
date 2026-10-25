@@ -1,67 +1,64 @@
-import { fieldText } from "../../shared/contracts";
 import { useEffect, useState } from "react";
 import { useLocation } from "@tanstack/react-router";
-import { ArrowRight, Sparkles, Film, ArrowLeft } from "lucide-react";
+import { Film } from "lucide-react";
 import { authClient } from "../auth-client";
-import { report } from "../notifications";
 import { safeReturnTo } from "../../shared/contracts";
-import { Button } from "../components/ui/button";
+
 export function AuthPage() {
-  const location = useLocation(),
-    params = new URLSearchParams(location.searchStr),
-    resetToken = params.get("token");
-  const [mode, setMode] = useState<"login" | "register" | "recover" | "reset">(
-      resetToken ? "reset" : "login",
-    ),
-    [busy, setBusy] = useState(false),
-    [message, setMessage] = useState(""),
-    [options, setOptions] = useState({ recovery: false, google: false });
+  const location = useLocation();
+  const params = new URLSearchParams(location.searchStr);
+  const [availability, setAvailability] = useState<"checking" | "ready" | "unavailable">(
+    "checking",
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(
+    params.has("socialError") ? "We couldn’t complete your sign-in. Please try again." : "",
+  );
+  async function checkAvailability(signal?: AbortSignal) {
+    setAvailability("checking");
+    try {
+      const response = await fetch("/api/auth-options", { signal });
+      if (!response.ok) throw new Error("Unavailable");
+      const options = await response.json();
+      setAvailability(options.google === true ? "ready" : "unavailable");
+    } catch {
+      if (!signal?.aborted) setAvailability("unavailable");
+    }
+  }
   useEffect(() => {
-    void fetch("/api/auth-options")
-      .then((r) => r.json())
-      .then(setOptions)
-      .catch(() => {});
+    const controller = new AbortController();
+    void checkAvailability(controller.signal);
+    return () => controller.abort();
   }, []);
-  async function submit(event: React.SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    const restore = (event: PageTransitionEvent) => {
+      if (event.persisted) setBusy(false);
+    };
+    window.addEventListener("pageshow", restore);
+    return () => window.removeEventListener("pageshow", restore);
+  }, []);
+  async function signInWithGoogle() {
     setBusy(true);
     setMessage("");
-    const data = new FormData(event.currentTarget),
-      email = fieldText(data.get("email") ?? ""),
-      password = fieldText(data.get("password") ?? "");
     try {
-      const result =
-        mode === "register"
-          ? await authClient.signUp.email({
-              email,
-              password,
-              name: fieldText(data.get("name")),
-              username: fieldText(data.get("username")),
-            })
-          : mode === "recover"
-            ? await authClient.requestPasswordReset({
-                email,
-                redirectTo: `${window.location.origin}/auth?mode=reset`,
-              })
-            : mode === "reset"
-              ? await authClient.resetPassword({ newPassword: password, token: resetToken ?? "" })
-              : await authClient.signIn.email({ email, password });
-      if (result.error) throw new Error(result.error.message ?? "Please try again");
-      if (mode === "recover")
-        setMessage("If that email is registered, a recovery link is on its way.");
-      else if (mode === "reset") {
-        setMessage("Password updated. You can sign in now.");
-        setMode("login");
-      } else window.location.assign(safeReturnTo(params.get("returnTo")));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Please try again");
-    } finally {
+      const returnTo = safeReturnTo(params.get("returnTo"));
+      const errorURL = new URL("/auth", window.location.origin);
+      errorURL.searchParams.set("socialError", "1");
+      errorURL.searchParams.set("returnTo", returnTo);
+      const result = await authClient.signIn.social({
+        provider: "auth-relay",
+        callbackURL: returnTo,
+        errorCallbackURL: errorURL.href,
+      });
+      if (result.error) throw new Error("Unavailable");
+    } catch {
+      setMessage("Google sign-in is unavailable right now. Please try again.");
       setBusy(false);
     }
   }
   return (
     <main className="auth-screen">
-      <section className="auth-art">
+      <section className="auth-art" aria-label="Welcome to MovieFinder">
         <a href="/auth" className="brand">
           <span className="brand-icon">
             <Film size={19} />
@@ -84,143 +81,46 @@ export function AuthPage() {
         </div>
         <span className="auth-note">A little curiosity. A great movie night.</span>
       </section>
-      <section className="auth-form-wrap">
-        <div className="auth-mobile-brand">
-          <Film /> moviefinder.
-        </div>
+      <section className="auth-form-wrap" aria-labelledby="auth-title">
+        <a href="/auth" className="auth-mobile-brand">
+          <Film aria-hidden="true" /> moviefinder.
+        </a>
         <div className="auth-form">
-          <span className="eyebrow">
-            <Sparkles size={14} /> YOUR NEXT OBSESSION AWAITS
-          </span>
-          <h2>
-            {mode === "register"
-              ? "Good stories start here."
-              : mode === "recover"
-                ? "Let’s get you back in."
-                : mode === "reset"
-                  ? "A fresh start."
-                  : "Welcome to your next watch."}
+          <span className="eyebrow">A GOOD NIGHT STARTS HERE</span>
+          <h2 id="auth-title">
+            Your next great
+            <br />
+            watch awaits.
           </h2>
           <p>
-            {mode === "register"
-              ? "Join the people who always have a good recommendation."
-              : mode === "recover"
-                ? "We’ll email you a link to reset your password."
-                : mode === "reset"
-                  ? "Choose a password with at least 10 characters."
-                  : "A world of films, series, and very good taste."}
+            Save what catches your eye. Make a collection.
+            <br className="auth-desktop-break" /> Find something you’ll love.
           </p>
-          <form onSubmit={submit}>
-            {mode === "register" && (
+          <button
+            className="google-signin"
+            type="button"
+            aria-label="Sign in with Google"
+            disabled={availability !== "ready" || busy}
+            onClick={() => void signInWithGoogle()}
+          >
+            <img src="/brand/google-signin-light.png" width="216" height="48" alt="" />
+          </button>
+          <p className="auth-account-note">One sign-in. A world of good stories.</p>
+          <div className="auth-feedback" role="status" aria-live="polite">
+            {availability === "unavailable" ? (
               <>
-                <label>
-                  Display name
-                  <input
-                    name="name"
-                    required
-                    autoComplete="name"
-                    maxLength={100}
-                    placeholder="What should we call you?"
-                  />
-                </label>
-                <label>
-                  Username
-                  <input
-                    name="username"
-                    required
-                    autoComplete="username"
-                    pattern="[a-zA-Z0-9_]{3,30}"
-                    placeholder="Your public handle"
-                  />
-                </label>
-              </>
-            )}
-            {mode !== "reset" && (
-              <label>
-                Email address
-                <input
-                  type="email"
-                  name="email"
-                  required
-                  autoComplete="email"
-                  placeholder="you@example.com"
-                />
-              </label>
-            )}
-            {mode !== "recover" && (
-              <label>
-                Password
-                <input
-                  type="password"
-                  name="password"
-                  required
-                  minLength={10}
-                  maxLength={128}
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  placeholder="At least 10 characters"
-                />
-              </label>
-            )}
-            {message && (
-              <div role="status" className="form-message">
-                {message}
-              </div>
-            )}
-            <Button disabled={busy} type="submit">
-              {busy
-                ? "One moment…"
-                : mode === "register"
-                  ? "Create your account"
-                  : mode === "recover"
-                    ? "Send recovery link"
-                    : mode === "reset"
-                      ? "Set new password"
-                      : "Let’s find something good"}
-              <ArrowRight size={18} />
-            </Button>
-          </form>
-          {mode === "login" && options.recovery && (
-            <button className="text-button recovery" onClick={() => setMode("recover")}>
-              Forgot your password?
-            </button>
-          )}
-          {mode === "login" && options.google && (
-            <Button
-              variant="outline"
-              onClick={() =>
-                void authClient.signIn
-                  .social({ provider: "google", callbackURL: safeReturnTo(params.get("returnTo")) })
-                  .catch(report)
-              }
-            >
-              Continue with Google
-            </Button>
-          )}
-          <div className="auth-switch">
-            {mode === "login" ? (
-              <>
-                New around here?{" "}
-                <button
-                  onClick={() => {
-                    setMode("register");
-                    setMessage("");
-                  }}
-                >
-                  Make yourself at home <ArrowRight size={14} />
+                <p>Sign-in is temporarily unavailable.</p>
+                <button className="auth-retry" onClick={() => void checkAvailability()}>
+                  Try again
                 </button>
               </>
-            ) : (
-              <button
-                onClick={() => {
-                  setMode("login");
-                  setMessage("");
-                }}
-              >
-                <ArrowLeft size={14} /> Back to sign in
-              </button>
-            )}
+            ) : message ? (
+              <p>{message}</p>
+            ) : busy ? (
+              <p>Opening Google…</p>
+            ) : null}
           </div>
-          <p className="auth-fine">Made for movie nights. Better with friends.</p>
+          <p className="auth-fine">New here? Your account is created when you sign in.</p>
         </div>
       </section>
     </main>
