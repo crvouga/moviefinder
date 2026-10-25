@@ -19,6 +19,8 @@ Production requires `DATABASE_URL` and the platform-generated `MOVIEFINDER_AUTH_
 
 Google is the only sign-in method. Password registration, password sign-in and recovery endpoints are disabled on the backend. Google login uses the shared auth relay, with public `MOVIEFINDER_OIDC_ISSUER` and `MOVIEFINDER_OIDC_CLIENT_ID` settings from an approved relay registration. Both settings are required at production startup. MovieFinder never receives Google credentials or an OIDC client secret. See [Google sign-in setup](docs/auth-relay.md) for registration, exact callbacks, local ports and verification limits.
 
+An existing deployment can accept additional owned HTTPS domains through `MOVIEFINDER_ADDITIONAL_ORIGINS` (comma-separated exact origins). Each hostname keeps its own authentication cookies, callback and CSRF boundary. Production retains `https://moviefinder.chrisvouga.dev` and adds `https://www.moviefinder.app`; the apex redirects to www. See the sign-in guide for both exact registered callbacks.
+
 When registration settings are saved in ignored `.local/auth-relay.json`, ordinary `bun run dev` configures Google automatically and retains the registered port. Live Google-backed sign-in has been verified locally; see the setup guide for registration expiry and renewal requirements.
 
 ## super.engineering hooks

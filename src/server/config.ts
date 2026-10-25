@@ -3,6 +3,7 @@ export const configSchema = z.object({
   DATABASE_URL: z.string().min(1),
   BETTER_AUTH_SECRET: z.string().min(32),
   MOVIEFINDER_ORIGIN: z.url().default("http://localhost:5173"),
+  MOVIEFINDER_ADDITIONAL_ORIGINS: z.string().optional(),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   MOVIEFINDER_TELEMETRY_DIR: z.string().optional(),
@@ -24,6 +25,26 @@ export function readConfig(env: Record<string, string | undefined>) {
     throw new Error("MOVIEFINDER_ORIGIN is required in production");
   if (result.data.NODE_ENV === "production" && result.data.MOVIEFINDER_TELEMETRY_DIR)
     throw new Error("MOVIEFINDER_TELEMETRY_DIR is for local development only");
+  const origins = applicationOrigins(result.data);
+  for (const origin of origins) {
+    const url = new URL(origin);
+    const loopback =
+      result.data.NODE_ENV !== "production" &&
+      url.protocol === "http:" &&
+      ["localhost", "127.0.0.1"].includes(url.hostname);
+    if (
+      url.origin !== origin ||
+      url.username ||
+      url.password ||
+      (!loopback && url.protocol !== "https:") ||
+      url.hostname.includes("*")
+    )
+      throw new Error(
+        "Application origins must be exact HTTPS origins (HTTP loopback for local tests/development)",
+      );
+  }
+  if (new Set(origins.map((origin) => new URL(origin).host)).size !== origins.length)
+    throw new Error("Application origins must have distinct hosts");
   const { MOVIEFINDER_OIDC_ISSUER: issuer, MOVIEFINDER_OIDC_CLIENT_ID: clientId } = result.data;
   if (!!issuer !== !!clientId)
     throw new Error("MOVIEFINDER_OIDC_ISSUER and MOVIEFINDER_OIDC_CLIENT_ID must be set together");
@@ -62,4 +83,14 @@ export function readConfig(env: Record<string, string | undefined>) {
       throw new Error("Development requires the nonproduction shared auth relay issuer");
   }
   return result.data;
+}
+
+export function applicationOrigins(config: Config): string[] {
+  return [
+    config.MOVIEFINDER_ORIGIN,
+    ...(config.MOVIEFINDER_ADDITIONAL_ORIGINS ?? "")
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  ];
 }

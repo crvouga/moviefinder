@@ -1,11 +1,31 @@
 import { expect, it } from "vite-plus/test";
 
-import { readConfig } from "../../src/server/config";
+import { applicationOrigins, readConfig } from "../../src/server/config";
 import { authCookiePrefix } from "../../src/server/auth-relay";
 const authEnv = {
   DATABASE_URL: "test",
   BETTER_AUTH_SECRET: "test-only-auth-secret-at-least-32-characters",
 };
+it("accepts only explicit additional origins and preserves the primary origin", () => {
+  const env = { ...authEnv, MOVIEFINDER_ORIGIN: "https://moviefinder.chrisvouga.dev" };
+  const config = readConfig({
+    ...env,
+    MOVIEFINDER_ADDITIONAL_ORIGINS: "https://www.moviefinder.app",
+  });
+  expect(applicationOrigins(config)).toEqual([
+    env.MOVIEFINDER_ORIGIN,
+    "https://www.moviefinder.app",
+  ]);
+  for (const value of [
+    "https://*.moviefinder.app",
+    "https://www.moviefinder.app/",
+    "https://www.moviefinder.app/callback",
+    "http://www.moviefinder.app",
+    "https://user@www.moviefinder.app",
+    env.MOVIEFINDER_ORIGIN,
+  ])
+    expect(() => readConfig({ ...env, MOVIEFINDER_ADDITIONAL_ORIGINS: value })).toThrow();
+});
 it("refuses a production server without its only sign-in provider", () => {
   const production = {
     ...authEnv,

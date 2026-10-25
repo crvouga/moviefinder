@@ -20,6 +20,7 @@ The approved platform change must allocate the `moviefinder` schema in both deve
 | MOVIEFINDER_OIDC_ISSUER         | Public setting from an approved shared relay registration                                                 | Environment-specific OIDC discovery                   |
 | MOVIEFINDER_OIDC_CLIENT_ID      | Public setting from the same registration                                                                 | Public S256 PKCE client; no client secret             |
 | MOVIEFINDER_ORIGIN              | Plain environment; localhost:5173 for development, approved HTTPS origin for production                   | Better Auth origin/callback/CSRF                      |
+| MOVIEFINDER_ADDITIONAL_ORIGINS  | Plain comma-separated exact HTTPS origins; www.moviefinder.app is additive                                | Independent auth/callback/CSRF per configured host    |
 | MOVIEFINDER_DATABASE_ALLOCATION | Plain confirmation of approved `moviefinder` allocation                                                   | Migration guard; not a substitute for actual approval |
 | PORT                            | Plain, 8080                                                                                               | Single public Bun port                                |
 

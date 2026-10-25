@@ -3,7 +3,7 @@ import type { Account } from "@crvouga/mockingbird-service-oauth";
 import type { createApplication } from "../../src/server/app";
 
 // Test-only Google wire profile. Public PKCE clients use the application's real callback.
-export async function startGoogle(origin: string) {
+export async function startGoogle(origin: string, additionalOrigins: string[] = []) {
   const clientId = "moviefinder-google-test";
   const server = await createServer({
     host: "127.0.0.1",
@@ -14,7 +14,9 @@ export async function startGoogle(origin: string) {
       {
         id: clientId,
         name: "MovieFinder test",
-        redirectUris: [`${origin}/api/auth/callback/auth-relay`],
+        redirectUris: [origin, ...additionalOrigins].map(
+          (value) => `${value}/api/auth/callback/auth-relay`,
+        ),
       },
     ],
   });
