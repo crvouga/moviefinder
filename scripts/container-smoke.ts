@@ -19,7 +19,8 @@ try {
     ...process.env,
     MOVIEFINDER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
     DATABASE_URL: "postgres://unreachable:local-only@127.0.0.1:1/moviefinder_test?sslmode=disable",
-    MOVIEFINDER_ORIGIN: "http://127.0.0.1:8080",
+    MOVIEFINDER_ORIGIN: "https://moviefinder.container.test",
+    MOVIEFINDER_ADDITIONAL_ORIGINS: "https://www.moviefinder.container.test",
     MOVIEFINDER_OIDC_ISSUER: "https://auth.chrisvouga.dev/realms/projects",
     MOVIEFINDER_OIDC_CLIENT_ID: "app-container-smoke-test",
     PORT: "8080",
@@ -40,6 +41,8 @@ try {
       "DATABASE_URL",
       "-e",
       "MOVIEFINDER_ORIGIN",
+      "-e",
+      "MOVIEFINDER_ADDITIONAL_ORIGINS",
       "-e",
       "MOVIEFINDER_OIDC_ISSUER",
       "-e",
@@ -69,13 +72,21 @@ try {
     await docker(["logs", "--tail", "30", container]);
     throw new Error("Container liveness did not become ready");
   }
-  const auth = await fetch(`${origin}/auth`),
-    protectedApi = await fetch(`${origin}/api/state`),
-    deepLink = await fetch(`${origin}/title/tmdb%3Amovie%3A550`, { redirect: "manual" });
-  if (auth.status !== 200 || !(await auth.text()).includes('<div id="root">'))
-    throw new Error("Compiled authentication application not served");
-  if (protectedApi.status !== 401 || deepLink.status !== 302)
-    throw new Error("Production authentication boundary failed");
+  // Railway terminates HTTPS before forwarding HTTP with the public Host.
+  for (const host of ["moviefinder.container.test", "www.moviefinder.container.test"]) {
+    const headers = { Host: host };
+    const auth = await fetch(`${origin}/auth`, { headers }),
+      protectedApi = await fetch(`${origin}/api/state`, { headers }),
+      deepLink = await fetch(`${origin}/title/tmdb%3Amovie%3A550`, { headers, redirect: "manual" });
+    if (auth.status !== 200 || !(await auth.text()).includes('<div id="root">'))
+      throw new Error("Compiled authentication application not served");
+    if (protectedApi.status !== 401 || deepLink.status !== 302)
+      throw new Error("Production authentication boundary failed");
+  }
+  const unknown = await fetch(`${origin}/api/state`, {
+    headers: { Host: "unregistered.test", "X-Forwarded-Host": "www.moviefinder.container.test" },
+  });
+  if (unknown.status !== 403) throw new Error("Unregistered host accepted");
   console.log(
     `${platform} image smoke passed: /health 200 with PostgreSQL unavailable; /auth 200; protected API 401; protected deep link 302.`,
   );
