@@ -30,6 +30,13 @@ export function AuthPage() {
     void checkAvailability(controller.signal);
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    const restore = (event: PageTransitionEvent) => {
+      if (event.persisted) setBusy(false);
+    };
+    window.addEventListener("pageshow", restore);
+    return () => window.removeEventListener("pageshow", restore);
+  }, []);
   async function signInWithGoogle() {
     setBusy(true);
     setMessage("");

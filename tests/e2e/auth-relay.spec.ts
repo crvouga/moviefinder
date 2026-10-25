@@ -58,6 +58,24 @@ test("handles cancelled Google consent through Mockingbird without a password fa
   await expect(page.locator("input")).toHaveCount(0);
 });
 
+test("restores the sign-in button when browser Back restores the cached document", async ({
+  page,
+}) => {
+  // Keep the successful pre-redirect document here to exercise the state retained by bfcache.
+  await page.route("**/api/auth/sign-in/social", (route) =>
+    route.fulfill({ json: { url: "https://relay.example/authorize", redirect: false } }),
+  );
+  await page.goto("/auth");
+  const google = page.getByRole("button", { name: "Sign in with Google", exact: true });
+  await google.click();
+  await expect(google).toBeDisabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+  );
+  await expect(google).toBeEnabled();
+  await expect(page.getByRole("status")).not.toContainText("Opening Google");
+});
+
 test("callback errors keep provider details out of the interface", async ({ page }) => {
   await page.goto(
     "/auth?socialError=1&error=unable_to_link_account&error_description=fixture-provider-detail",
