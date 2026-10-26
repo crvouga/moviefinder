@@ -31,11 +31,16 @@ test("both domains complete sign-in, preserve deep links and isolate sign-out", 
       })
     ).status(),
   ).toBe(200);
-  await alias.goto("http://localhost:5188/lists");
-  await expect(alias).toHaveURL(/\/auth\?returnTo=/);
+  // Pending authenticated reads may redirect the old tab after sign-out. Use a
+  // fresh tab in the same cookie context to verify the protected route without
+  // racing that redirect against a second navigation.
+  await alias.close();
+  const signedOut = await context.newPage();
+  await signedOut.goto("http://localhost:5188/lists");
+  await expect(signedOut).toHaveURL(/\/auth\?returnTo=/);
   await page.reload();
   await expect(page).toHaveURL("http://127.0.0.1:5188/lists");
-  await alias.close();
+  await signedOut.close();
 });
 
 test("shows only the official Google sign-in button with accessible keyboard focus", async ({
