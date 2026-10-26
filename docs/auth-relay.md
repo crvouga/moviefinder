@@ -19,7 +19,17 @@ For production, the infrastructure owner adds the two public settings to the `mo
 
 Local startup normally selects an available port. Registered callbacks must keep their exact port.
 
-Registration tooling can save the returned public connection settings under ignored `.local/auth-relay.json` with `issuer`, `clientId`, `callbackURL` and ISO `expiresAt` fields. `bun run dev` reads this record automatically, selects the registered port and injects the two OIDC settings into its children. No credentials belong in this file. Expired or malformed records fail clearly. Explicit OIDC environment configuration overrides this saved record; an explicit web port must match its registered callback. With a saved record, ordinary `bun run dev` needs no OIDC environment variables. Without a saved record, configure an approved registration explicitly:
+Registration tooling can save the returned public connection settings under ignored `.local/auth-relay.json` with `issuer`, `clientId`, `callbackURL` and ISO `expiresAt` fields. `bun run dev` reads this record automatically, selects the registered port and injects the two OIDC settings into its children. No credentials belong in this file. Expired or malformed records fail clearly. Explicit OIDC environment configuration overrides this saved record; an explicit web port must match its registered callback. With a saved record, ordinary `bun run dev` needs no OIDC environment variables.
+
+The saved record belongs to one checkout and is ignored by Git, so a new worktree
+does not inherit it. Register a distinct instance and exact callback for each
+concurrent checkout, then save its returned settings locally. Without either a
+saved record or explicit configuration, startup warns that Google sign-in is
+unconfigured. Explicit OIDC settings require `MOVIEFINDER_WEB_PORT`; a random port
+cannot match an exact registered callback. The Vite development server binds to
+`localhost` and prints one local URL.
+
+Without a saved record, configure an approved registration explicitly:
 
 ```sh
 MOVIEFINDER_WEB_PORT=5173 \
@@ -61,6 +71,16 @@ Before rollout, read back the approved registration, confirm both public setting
 On 2026-10-24, live Google-backed sign-in succeeded in the super.engineering WebKit browser through an existing Google/relay session. The verified MovieFinder session survived page reload and a complete local server/database restart. Sign-out restored unauthorized API responses, and another Google sign-in restored a protected `/lists` deep link. A second registered localhost instance with a disposable database confirmed independent sessions in the same browser: it started signed out, completed Google sign-in independently, and signing out there preserved the first instance's session. Its temporary client was revoked and the instance/database were removed after verification. This checkout is configured under ignored `.local/auth-relay.json`; its nonproduction registration expires on 2026-10-31. Renew it through the operator API before expiry. Production MovieFinder configuration, fresh Google consent in a new browser profile, unrelated public domains and the complete browser/reliability acceptance matrix remain unverified.
 
 ## Google-only interface and test identity
+
+On 2026-10-25, a new worktree had no ignored registration record and returned
+`google: false` from `/api/auth-options`. Its own nonproduction relay instance was
+registered through the existing authorized operator console, with an exact
+localhost callback and expiry on 2026-10-31. Saving its public settings in that
+checkout's `.local/auth-relay.json` and restarting restored `google: true`. Live
+Google account selection completed in the super.engineering WebKit browser at
+`http://localhost:58553`, and the authenticated application survived reload. Vite
+startup printed one local URL. This verifies that checkout; other new worktrees
+still need their own registration.
 
 The sign-in page offers a single Google action. It uses the unmodified light rectangular Android/Web PNG from Google's [pre-approved sign-in asset bundle](https://developers.google.com/identity/branding-guidelines), downloaded on 2026-10-24. `public/brand/google-signin-light.png` retains the official logo, text, font, colors, border and padding; its 720×160 image is displayed at 216×48 with the same aspect ratio. The accessible button name matches the asset, **Sign in with Google**. Focus is visible, requests prevent duplicate activation, and failures offer retry. No Google SDK client ID or Google secret is exposed to MovieFinder.
 

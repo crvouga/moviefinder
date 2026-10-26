@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vite-plus/test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLocalAuthRelay } from "../../scripts/local-auth-relay";
+import { localDevAuth, readLocalAuthRelay } from "../../scripts/local-auth-relay";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -35,6 +35,26 @@ it("restores public registration settings and the exact registered port", async 
 });
 it("allows development without a saved registration", async () => {
   expect(await readLocalAuthRelay(join(tmpdir(), crypto.randomUUID()))).toBeUndefined();
+});
+it("keeps saved and explicit callbacks on their registered port", async () => {
+  const directory = await fixture();
+  expect(await localDevAuth({}, directory)).toMatchObject({ port: 43117 });
+  await expect(localDevAuth({ MOVIEFINDER_WEB_PORT: "43118" }, directory)).rejects.toThrow(
+    "differs from the registered Google callback",
+  );
+  const explicit = {
+    MOVIEFINDER_OIDC_ISSUER: "https://auth-dev.chrisvouga.dev/realms/projects-dev",
+    MOVIEFINDER_OIDC_CLIENT_ID: "app-another-registration",
+  };
+  await expect(localDevAuth(explicit, directory)).rejects.toThrow("require MOVIEFINDER_WEB_PORT");
+  expect(await localDevAuth({ ...explicit, MOVIEFINDER_WEB_PORT: "43118" }, directory)).toEqual({
+    issuer: explicit.MOVIEFINDER_OIDC_ISSUER,
+    clientId: explicit.MOVIEFINDER_OIDC_CLIENT_ID,
+    port: 43118,
+  });
+  await expect(
+    localDevAuth({ MOVIEFINDER_OIDC_ISSUER: explicit.MOVIEFINDER_OIDC_ISSUER }, directory),
+  ).rejects.toThrow("must be set together");
 });
 it("refuses expired registrations and callbacks outside the local application", async () => {
   await expect(
