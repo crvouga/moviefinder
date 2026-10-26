@@ -19,6 +19,10 @@ Development uses the same API with Vite+'s relative-origin proxy. `scripts/dev.t
 
 ## Browser boundaries
 
+React uses Mantine exclusively for the UI, with one theme and provider configuration.
+The responsive AppShell, page compositions, accessible forms and approved functional
+CSS exceptions are documented in [UI conventions](ui.md).
+
 TanStack Router owns deep links and navigation. Authentication restoration gates application routes. The intended route is retained through login; only safe same-origin return targets are accepted.
 
 `client/state.ts` defines a canonical TanStack DB query collection per entity kind. Query Collections fetch a shared bootstrap snapshot through Hono RPC. Server responses and SSE events merge into these collections. Components derive views using live queries rather than storing copies of entities in local state. Local state holds search input, dialogs, view identities, and gesture positions.

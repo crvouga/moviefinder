@@ -2,7 +2,7 @@ import { openLocalDatabase, migrateLocalDatabase } from "./local-database";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { readLocalAuthRelay } from "./local-auth-relay";
+import { localDevAuth } from "./local-auth-relay";
 // Cookies on localhost are shared across ports, so other dev apps can push requests past the 16KB default.
 const headerLimit = 131072;
 const children = new Map<ChildProcess, Promise<number>>();
@@ -74,19 +74,16 @@ try {
   if (!stopping) {
     await migrateLocalDatabase(database.url);
     if (!stopping) {
-      const relay =
-        !process.env.MOVIEFINDER_OIDC_ISSUER && !process.env.MOVIEFINDER_OIDC_CLIENT_ID
-          ? await readLocalAuthRelay()
-          : undefined;
+      const relay = await localDevAuth(process.env);
       const configuredWebPort = process.env.MOVIEFINDER_WEB_PORT ?? relay?.port;
       const webPort = configuredWebPort ? Number(configuredWebPort) : await freePort();
       if (!Number.isInteger(webPort) || webPort < 1 || webPort > 65535)
         throw new Error("MOVIEFINDER_WEB_PORT must be an integer from 1 to 65535");
       const apiPort = await freePort();
       const origin = `http://localhost:${webPort}`;
-      if (relay && origin !== relay.origin)
-        throw new Error(
-          "MOVIEFINDER_WEB_PORT differs from the registered Google callback; update the relay registration first",
+      if (!relay)
+        console.warn(
+          "Google sign-in is not configured in this checkout. Save its approved registration to .local/auth-relay.json (see docs/auth-relay.md).",
         );
       const env = {
         ...process.env,

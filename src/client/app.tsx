@@ -11,7 +11,21 @@ import {
   RouterProvider,
   useRouter,
 } from "@tanstack/react-router";
-import { Film } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import {
+  Alert,
+  Group,
+  Anchor,
+  AppShell,
+  Button,
+  Center,
+  Container,
+  Skeleton,
+  Stack,
+  Text,
+  ThemeIcon,
+  Title,
+} from "@mantine/core";
 import { authClient } from "./auth-client";
 import { rememberUser } from "./session";
 import { collections, startSync, stopSync } from "./state";
@@ -23,7 +37,7 @@ import { Discover } from "./pages/discover";
 import { DetailPage } from "./pages/details";
 import { SearchPage } from "./pages/search";
 import { ListsPage, ListDetail } from "./pages/lists";
-import { ActivityPage, ProfilePage } from "./pages/social";
+import { ActivityPage, ProfilePage, ProfileHeader } from "./pages/social";
 import { Toast } from "./components/toast";
 import { ViewerProvider } from "./components/viewer";
 import { Screen } from "./components/screen";
@@ -84,14 +98,7 @@ function Root() {
   if (isAuth)
     return (
       <>
-        <Suspense
-          fallback={
-            <div className="route-placeholder" aria-label="Opening this page">
-              <div className="skeleton-line wide" />
-              <div className="skeleton-line" />
-            </div>
-          }
-        >
+        <Suspense fallback={<RoutePlaceholder />}>
           <Outlet />
         </Suspense>
         <Toast />
@@ -99,36 +106,36 @@ function Root() {
     );
   if (!session.data)
     return (
-      <main className="session-restoration">
-        <span className="brand-icon">
-          <Film size={25} />
-        </span>
-        <h1>moviefinder.</h1>
-        <p>
-          {session.isPending
-            ? "Getting your seat ready."
-            : "Your next good story starts with signing in."}
-        </p>
-      </main>
+      <Center mih="100dvh">
+        <Stack align="center" gap="md">
+          <ThemeIcon variant="light" size="xl">
+            <Text component="span" size="xl" lh={1} aria-hidden="true">
+              🍿
+            </Text>
+          </ThemeIcon>
+          <Title order={1}>MovieFinder</Title>
+          <Text c="dimmed" role="status">
+            {session.isPending ? "Restoring session…" : "Sign in to continue."}
+          </Text>
+          {session.isPending && <Skeleton h="var(--mantine-spacing-sm)" w="10rem" />}
+        </Stack>
+      </Center>
     );
   return (
     <ViewerProvider userId={session.data.user.id}>
-      <div className="app-shell">
-        <Suspense
-          fallback={
-            <div className="mobile-header">
-              <span className="brand">moviefinder.</span>
-            </div>
-          }
-        >
-          <Profiled id="navigation">
-            <Navigation userId={session.data.user.id} />
-          </Profiled>
-        </Suspense>
+      <Navigation userId={session.data.user.id}>
         <MainContent />
-        <Toast />
-      </div>
+      </Navigation>
+      <Toast />
     </ViewerProvider>
+  );
+}
+function RoutePlaceholder() {
+  return (
+    <Stack aria-label="Opening this page" aria-busy="true">
+      <Skeleton h="var(--mantine-spacing-xl)" w="60%" />
+      <Skeleton h="var(--mantine-spacing-sm)" w="40%" />
+    </Stack>
   );
 }
 // Only the outlet and active navigation subscribe to pathname changes. Opening a route must
@@ -136,23 +143,18 @@ function Root() {
 function MainContent() {
   const pathname = useLocation({ select: (location) => location.pathname });
   return (
-    <main className="app-main" id="main-content" data-route={pathname}>
-      <Suspense
-        key={pathname}
-        fallback={
-          <div className="route-placeholder" aria-label="Opening this page">
-            <div className="skeleton-line wide" />
-            <div className="skeleton-line" />
-          </div>
-        }
-      >
-        <Profiled id="screen">
-          <Outlet />
-        </Profiled>
-      </Suspense>
-    </main>
+    <AppShell.Main id="main-content" data-route={pathname} tabIndex={-1}>
+      <Container>
+        <Suspense key={pathname} fallback={<RoutePlaceholder />}>
+          <Profiled id="screen">
+            <Outlet />
+          </Profiled>
+        </Suspense>
+      </Container>
+    </AppShell.Main>
   );
 }
+
 function useCurrentUser() {
   return authClient.useSession().data?.user.id ?? "";
 }
@@ -160,33 +162,42 @@ function PageScreen({ children }: { children: React.ReactNode }) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const userId = useCurrentUser();
   const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
-  const [eyebrow, title] =
+  const title =
     segments[0] === "lists"
       ? segments[1]
-        ? [
-            "A LITTLE COLLECTION OF GOOD STORIES",
-            collections.list.get(segments[1])?.title ?? "Collection",
-          ]
-        : ["GOOD TASTE IS BETTER SHARED", "A list for every kind of night."]
+        ? (collections.list.get(segments[1])?.title ?? "List")
+        : "Lists"
       : segments[0] === "profile"
-        ? [
-            "A LIFE IN GOOD STORIES",
-            collections.user.get(segments[1] ?? userId)?.title ?? "Movie lover",
-          ]
+        ? (collections.user.get(segments[1] ?? userId)?.title ?? "Profile")
         : segments[0] === "activity"
-          ? ["A SHARED LOVE OF STORIES", "In good company."]
+          ? "Activity"
           : segments[0] === "search"
-            ? ["FOLLOW YOUR CURIOSITY", "What are you in the mood for?"]
-            : ["A GOOD NIGHT STARTS HERE", "Find your next obsession."];
+            ? "Search"
+            : "Discover";
   return (
     <Screen
       preview={
-        <div className="standard-page" data-screen-preview aria-busy="true">
-          {segments[0] === "lists" && segments[1] && <Link to="/lists">Back to collections</Link>}
-          <PageHeading eyebrow={eyebrow!} title={title!} />
-          <div className="skeleton-line wide" />
-          <div className="skeleton-line" />
-        </div>
+        <Stack data-screen-preview aria-busy="true" gap="lg">
+          {segments[0] === "profile" ? (
+            <ProfileHeader
+              user={collections.user.get(segments[1] ?? userId)}
+              own={!segments[1] || segments[1] === userId}
+            />
+          ) : (
+            <>
+              {segments[0] === "lists" && segments[1] && (
+                <Anchor renderRoot={(props) => <Link {...props} to="/lists" />}>
+                  <Group gap="xs">
+                    <ArrowLeft size={16} />
+                    Back to lists
+                  </Group>
+                </Anchor>
+              )}
+              <PageHeading title={title} />
+            </>
+          )}
+          <RoutePlaceholder />
+        </Stack>
       }
     >
       {children}
@@ -197,13 +208,14 @@ const root = createRootRoute({
   component: Root,
   validateSearch: (search: Record<string, unknown>) => search,
   notFoundComponent: () => (
-    <div className="standard-page">
-      <h1>A story for another day.</h1>
-      <p>This page couldn’t be found.</p>
-      <Link to="/">Back to Discover</Link>
-    </div>
+    <Stack>
+      <PageHeading title="Page not found" />
+      <Text c="dimmed">The requested page does not exist.</Text>
+      <Anchor renderRoot={(props) => <Link {...props} to="/" />}>Back to Discover</Anchor>
+    </Stack>
   ),
 });
+
 const home = createRoute({
   getParentRoute: () => root,
   path: "/",
@@ -276,14 +288,17 @@ const publicProfile = createRoute({
 function ScreenError() {
   const currentRouter = useRouter();
   return (
-    <div className="standard-page">
-      <h1>This page couldn’t be opened.</h1>
-      <p>Please try again shortly.</p>
-      <button onClick={() => void currentRouter.invalidate()}>Try again</button>
-      <Link to="/">Back to Discover</Link>
-    </div>
+    <Stack>
+      <PageHeading title="Unable to open page" />
+      <Alert color="red" title="Page error">
+        Please try again.
+      </Alert>
+      <Button onClick={() => void currentRouter.invalidate()}>Try again</Button>
+      <Anchor renderRoot={(props) => <Link {...props} to="/" />}>Back to Discover</Anchor>
+    </Stack>
   );
 }
+
 export const router = createRouter({
   parseSearch,
   stringifySearch,

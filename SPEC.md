@@ -126,8 +126,8 @@ Use the following technologies.
 | Frontend | React 19 |
 | Build and developer tooling | Vite+ |
 | Routing | TanStack Router |
-| Components | shadcn/ui |
-| Styling | Tailwind CSS |
+| Components | Mantine |
+| Styling | Central Mantine theme and component props |
 | Feed interaction | Swiper.js |
 | Normalized client server-state | TanStack DB |
 | Collection fetching | TanStack Query Collections |
@@ -975,7 +975,7 @@ Better Auth schema changes must also flow through Atlas.
 
 Mobile UX is the highest product-level priority.
 
-Build a cohesive interface using shadcn/ui and Tailwind CSS.
+Build a cohesive React interface using Mantine as the only design system. Follow docs/ui.md and its central theme/provider. Use neutral app language; avoid promotional copy.
 
 Prefer established components and conventions instead of bespoke components.
 

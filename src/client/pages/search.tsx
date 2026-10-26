@@ -3,8 +3,11 @@ import { fieldText } from "../../shared/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch, useNavigate } from "@tanstack/react-router";
 import { Search, ArrowUpRight, Users, Bookmark } from "lucide-react";
+import { Button, Group, NavLink, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 import { feedParams, stableSerialize, type Entity } from "../../shared/contracts";
 import { discover, subscribeQuery, useEntities, report, loadSocial } from "../state";
+import { useStableOrder } from "../stable-order";
+import { DataSection } from "../components/data-section";
 import { TitleCard, PageHeading, Empty, ShowMore, usePaging } from "../components/common";
 const noIds: string[] = [];
 export function SearchPage() {
@@ -72,112 +75,124 @@ export function SearchPage() {
       if (!remote.has(e.id) && e.title.toLowerCase().includes(needle)) ranked.push(e);
     return ranked;
   }, [query, remoteIds, movies, tv, people]);
+  const ordered = useStableOrder(query, titles);
   const matches = (e: Entity) => e.title.toLowerCase().includes(query.toLowerCase()),
-    filmsAndSeries = useMemo(() => titles.filter((t) => t.kind !== "person"), [titles]),
-    personResults = useMemo(() => titles.filter((e) => e.kind === "person"), [titles]),
+    filmsAndSeries = useMemo(() => ordered.rows.filter((t) => t.kind !== "person"), [ordered.rows]),
+    personResults = useMemo(() => ordered.rows.filter((e) => e.kind === "person"), [ordered.rows]),
     userResults = users.filter(matches),
     listResults = lists.filter(matches);
   return (
-    <div className="standard-page">
-      <PageHeading eyebrow="FOLLOW YOUR CURIOSITY" title="What are you in the mood for?" />
-      <div className="search-field">
-        <Search size={22} />
-        <input
-          aria-label="Search movies, series, people, and lists"
-          maxLength={200}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="A film, a series, a person, a feeling…"
-          autoComplete="off"
-          autoFocus
-        />
-      </div>
+    <Stack gap="lg">
+      <PageHeading title="Search">
+        <Button variant="default" onClick={ordered.refresh} disabled={ordered.isCurrent}>
+          Refresh order
+        </Button>
+      </PageHeading>
+      <TextInput
+        size="lg"
+        variant="filled"
+        aria-label="Search movies, series, people, and lists"
+        maxLength={200}
+        value={input}
+        onChange={(event) => setInput(event.target.value)}
+        placeholder="Search movies, TV shows, people, and lists"
+        autoComplete="off"
+        autoFocus
+        leftSection={<Search size={20} />}
+      />
       {!query ? (
-        <div className="search-start">
-          <span>✦</span>
-          <h2>Start with a little curiosity.</h2>
-          <p>Discover films, find your people, or borrow someone’s very good taste.</p>
-          <div className="suggested-searches">
-            {["Studio Ghibli", "Christopher Nolan", "Severance", "Wong Kar-wai"].map((q) => (
-              <button className="chip" key={q} onClick={() => setInput(q)}>
+        <Stack>
+          <Empty title="Search the catalog">Enter a title, person, member, or list name.</Empty>
+          <Group>
+            {["Studio Ghibli", "Christopher Nolan", "Severance", "Wong Kar-wai"].map((q, index) => (
+              <Button
+                variant="light"
+                color={["pink", "violet", "cyan", "yellow"][index]}
+                key={q}
+                onClick={() => setInput(q)}
+              >
                 {q}
-                <ArrowUpRight size={14} />
-              </button>
+              </Button>
             ))}
-          </div>
-        </div>
+          </Group>
+        </Stack>
       ) : (
         <>
-          <div className="search-summary">
-            Exploring “{query}”
-            {meta && (meta.data.coverage as { state: string }).state !== "complete" && (
-              <span> · More results may arrive</span>
+          <Text size="sm" c="dimmed" role="status" h="3.1em" lineClamp={2}>
+            Results for “{query}”
+            {meta && (meta.data.coverage as { state: string }).state !== "complete"
+              ? " · Search in progress"
+              : ""}
+          </Text>
+          <DataSection title="Movies and TV shows" height="32rem">
+            {filmsAndSeries.length ? (
+              <Stack>
+                <SimpleGrid cols={{ base: 2, xs: 3, md: 4, lg: 5 }}>
+                  {filmsAndSeries.slice(0, paging.shown).map((entity) => (
+                    <TitleCard key={entity.id} entity={entity} />
+                  ))}
+                </SimpleGrid>
+                <ShowMore total={filmsAndSeries.length} paging={paging} />
+              </Stack>
+            ) : (
+              <Empty title="No movies or TV shows yet">
+                Results will appear here as the catalog search completes.
+              </Empty>
             )}
-          </div>
-          {filmsAndSeries.length > 0 && (
-            <section className="detail-section">
-              <h2>Films & series</h2>
-              <div className="title-grid">
-                {filmsAndSeries.slice(0, paging.shown).map((e) => (
-                  <TitleCard key={e.id} entity={e} />
+          </DataSection>
+          <DataSection title="People" height="32rem">
+            {personResults.length ? (
+              <SimpleGrid cols={{ base: 2, xs: 3, md: 4, lg: 5 }}>
+                {personResults.map((entity) => (
+                  <TitleCard key={entity.id} entity={entity} />
                 ))}
-              </div>
-              <ShowMore total={filmsAndSeries.length} paging={paging} />
-            </section>
-          )}
-          {personResults.length > 0 && (
-            <section className="detail-section">
-              <h2>Behind the stories</h2>
-              <div className="title-grid">
-                {personResults.map((e) => (
-                  <TitleCard key={e.id} entity={e} />
+              </SimpleGrid>
+            ) : (
+              <Empty title="No people found">Matching people will appear here.</Empty>
+            )}
+          </DataSection>
+          <DataSection title="Members" height="16rem">
+            {userResults.length ? (
+              <Stack>
+                {userResults.map((user) => (
+                  <NavLink
+                    key={user.id}
+                    renderRoot={(props) => (
+                      <Link {...props} to="/profile/$userId" params={{ userId: user.id }} />
+                    )}
+                    label={user.title}
+                    description={`@${fieldText(user.data.username ?? "member")}`}
+                    leftSection={<Users size={20} />}
+                    rightSection={<ArrowUpRight size={18} />}
+                  />
                 ))}
-              </div>
-            </section>
-          )}
-          {userResults.length > 0 && (
-            <section className="detail-section">
-              <h2>People with good taste</h2>
-              <div className="social-results">
-                {userResults.map((u) => (
-                  <Link key={u.id} to="/profile/$userId" params={{ userId: u.id }}>
-                    <Users />
-                    <div>
-                      <strong>{u.title}</strong>
-                      <small>@{fieldText(u.data.username ?? "movie-lover")}</small>
-                    </div>
-                    <ArrowUpRight />
-                  </Link>
+              </Stack>
+            ) : (
+              <Empty title="No members found">Matching members will appear here.</Empty>
+            )}
+          </DataSection>
+          <DataSection title="Lists" height="16rem">
+            {listResults.length ? (
+              <Stack>
+                {listResults.map((list) => (
+                  <NavLink
+                    key={list.id}
+                    renderRoot={(props) => (
+                      <Link {...props} to="/lists/$listId" params={{ listId: list.id }} />
+                    )}
+                    label={list.title}
+                    description={fieldText(list.data.description ?? "")}
+                    leftSection={<Bookmark size={20} />}
+                    rightSection={<ArrowUpRight size={18} />}
+                  />
                 ))}
-              </div>
-            </section>
-          )}
-          {listResults.length > 0 && (
-            <section className="detail-section">
-              <h2>Lists to get lost in</h2>
-              <div className="social-results">
-                {listResults.map((l) => (
-                  <Link key={l.id} to="/lists/$listId" params={{ listId: l.id }}>
-                    <Bookmark />
-                    <div>
-                      <strong>{l.title}</strong>
-                      <small>
-                        {fieldText(l.data.description ?? "A little collection of stories.")}
-                      </small>
-                    </div>
-                    <ArrowUpRight />
-                  </Link>
-                ))}
-              </div>
-            </section>
-          )}
-          {!titles.length && !userResults.length && !listResults.length && (
-            <Empty title="A little further off the beaten path.">
-              No cached matches yet. Try another title while the catalog search finishes.
-            </Empty>
-          )}
+              </Stack>
+            ) : (
+              <Empty title="No lists found">Matching lists will appear here.</Empty>
+            )}
+          </DataSection>
         </>
       )}
-    </div>
+    </Stack>
   );
 }

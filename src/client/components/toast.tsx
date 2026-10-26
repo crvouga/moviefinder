@@ -1,23 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { notifications } from "@mantine/notifications";
 import { notices } from "../notifications";
+
+// Keep command transport independent of the rendered notification system.
 export function Toast() {
-  const [message, setMessage] = useState("");
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    const show = (e: Event) => {
-      setMessage((e as CustomEvent<string>).detail);
-      clearTimeout(timer);
-      timer = setTimeout(() => setMessage(""), 6000);
-    };
+    const show = (event: Event) =>
+      notifications.show({
+        message: (event as CustomEvent<string>).detail,
+        autoClose: 6000,
+        withCloseButton: true,
+        role: "status",
+      });
     notices.addEventListener("notice", show);
-    return () => {
-      notices.removeEventListener("notice", show);
-      clearTimeout(timer);
-    };
+    return () => notices.removeEventListener("notice", show);
   }, []);
-  return message ? (
-    <div role="status" className="toast" onClick={() => setMessage("")}>
-      {message}
-    </div>
-  ) : null;
+  return null;
 }

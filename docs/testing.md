@@ -33,3 +33,21 @@ The container smoke helper defaults to linux/amd64; set CONTAINER_PLATFORM=linux
 Local schema generation/verification also uses embedded PostgreSQL: committed migrations replay into a temporary application database and Atlas normalizes the desired schema in a separate temporary scratch database. Both are cleaned up. This keeps Atlas diff/checks independent of Docker and the developer's `.local/` cluster. Docker remains necessary only for container-image verification.
 
 Authentication fixtures use Mockingbird's Google OAuth profile (`@crvouga/mockingbird-service-oauth`, development dependency). Tests perform public S256 PKCE and real signed-token verification through the same Better Auth callback as the shared relay. Browser tests drive the emulator's documented account creation and consent controls; they never enable password login or use real Google/Vault credentials. Database lifecycle and application integration fixtures also authenticate through Mockingbird. Dedicated adversarial relay tests remain for invalid signatures/claims and single-use transaction rejection. The Google-only screen is checked on mobile and desktop for its official asset, preserved aspect ratio, keyboard focus, errors, cancellation, and absence of credential fields; integration tests assert all credential endpoints return 404.
+
+The Mantine browser checks run axe WCAG A/AA scans on sign-in, discovery, the
+filter drawer, search, lists, activity, profiles, movie/TV/person/season/episode
+details and the unknown-route state at both configured viewport sizes. They also
+verify horizontal overflow, drawer focus restoration, tab keyboard navigation,
+mobile shell visibility, date filter serialization and reduced-motion feed controls.
+A separate layout case checks the main routes and filter drawer at 320 px and 768 px.
+Scans are automated coverage, not a complete accessibility certification.
+`tests/unit/ui-architecture.test.ts` guards Mantine dependency, provider, theme,
+primitive and styling boundaries; approved functional CSS exceptions are listed
+in [UI conventions](ui.md).
+
+`layout-stability.spec.ts` holds authenticated data responses and checks exact
+positions during discovery, detail and profile hydration, artwork decoding, viewer
+badges and live profile edits. It observes every `layout-shift` event without the
+recent-input exclusion or rounding. It opts out of headless Playwright's default
+`--hide-scrollbars` flag, forces a real 16px classic gutter for the desktop case,
+and verifies short/long pages, modal/drawer open/close and background wheel isolation.
