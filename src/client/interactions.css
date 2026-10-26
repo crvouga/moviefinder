@@ -1,0 +1,29 @@
+/* The viewport has no Mantine component. Keep its native scrollbar and gutter
+   present before data arrives and while Mantine locks background wheel/touch. */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+/* Mantine centers a minimum-size thumb hit area with percentage offsets. As the
+   thumb resizes, Chromium can report a clipped subpixel shift. Keep the existing
+   hit area at its host origin; retain Mantine's minimum size and thumb behavior. */
+.stable-scroll-thumb::before {
+  inset: 0;
+  transform: none;
+}
+
+/* Pointer capture needs to own the reorder gesture on touch screens. Only the
+   handle suppresses scrolling; the rest of each list row scrolls normally. */
+.list-drag-handle {
+  touch-action: none;
+}
+
+/* VisuallyHidden has no reveal-on-focus API. Keep the skip link visible when
+   focused, above the fixed application header, without overriding Mantine. */
+.skip-link {
+  z-index: var(--mantine-z-index-max);
+}
+.skip-link:not(:focus) {
+  clip-path: inset(50%);
+}

@@ -186,11 +186,13 @@ export function useEntities(kind: Kind, ids?: readonly string[]) {
   });
   // A live query establishes its subscription asynchronously. Read the same canonical rows
   // during that first render instead of flashing empty cast/genres/cards in a prepared graph.
-  if (ids && !result.isReady)
-    return ids.flatMap((id) => {
-      const entity = collections[kind].get(id);
-      return entity ? [entity] : [];
-    });
+  if (!result.isReady)
+    return ids
+      ? ids.flatMap((id) => {
+          const entity = collections[kind].get(id);
+          return entity ? [entity] : [];
+        })
+      : [...collections[kind].values()];
   return (result.data ?? []) as Entity[];
 }
 export function useEntity(id: string | undefined) {

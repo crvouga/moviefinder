@@ -139,3 +139,12 @@ on operation-owned signals or response objects across asynchronous boundaries. N
 global request context to label concurrent operations. Server: `record`, `timed`, `inTrace` and
 `background` from `src/server/telemetry.ts`. New fields/static labels must be added intentionally to
 the shared privacy allowlist and covered by appropriate tests.
+
+`bun run perf --layout --seed 80 --titles 120 --lists 3 --keep` is a focused cold
+search/layout reproduction. It records exact shift values and affected element
+geometry under 4x CPU throttling. Its diagnostic output contains only route
+templates, static component classes/tags and numeric rectangles; never add text,
+DOM IDs, URLs, input values or user fields. Application layout telemetry now retains
+the browser's raw shift value so microshifts are not rounded to zero.
+Use `--layout-all` instead of `--layout` to collect the same affected-element
+geometry during the full browsing/list/session workload.

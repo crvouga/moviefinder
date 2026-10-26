@@ -8,16 +8,48 @@ import { Link, useSearch, useNavigate } from "@tanstack/react-router";
 import { Swiper, SwiperSlide } from "swiper/react";
 import { Keyboard, Mousewheel, Virtual, A11y } from "swiper/modules";
 import type { Swiper as SwiperType } from "swiper";
-import "swiper/css";
 import {
   SlidersHorizontal,
   ChevronDown,
-  ArrowUpRight,
+  ChevronRight,
   Star,
   Bookmark,
   ArrowDown,
-  Sparkles,
+  ArrowUp,
+  Film,
+  Tv,
+  Popcorn,
+  Ticket,
 } from "lucide-react";
+import {
+  Accordion,
+  ActionIcon,
+  Alert,
+  Anchor,
+  Badge,
+  Box,
+  Button,
+  Card,
+  Checkbox,
+  Divider,
+  Drawer,
+  Flex,
+  Group,
+  Modal,
+  NativeSelect,
+  NumberInput,
+  Paper,
+  ScrollArea,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Text,
+  TextInput,
+  ThemeIcon,
+  Title,
+} from "@mantine/core";
+import { DateInput } from "@mantine/dates";
+import { useReducedMotion } from "@mantine/hooks";
 import {
   feedParams,
   stableSerialize,
@@ -25,6 +57,7 @@ import {
   type Coverage,
   type Entity,
 } from "../../shared/contracts";
+import { feedParams as parseFeedParams } from "../../shared/contracts";
 import {
   useEntities,
   discover,
@@ -34,9 +67,9 @@ import {
   report,
   notify,
 } from "../state";
-import { Poster, Tags, PageHeading, Empty } from "../components/common";
-import { Button } from "../components/ui/button";
-import { Sheet } from "../components/ui/dialog";
+import { Tags, PageHeading, Empty } from "../components/common";
+import { Image } from "../components/image";
+import { entityImages } from "../images";
 const genres = [
   [28, "Action"],
   [12, "Adventure"],
@@ -77,37 +110,113 @@ const Slide = memo(function Slide({
   userId: string;
 }) {
   return (
-    <article className="discovery-slide">
-      <Poster entity={entity} slot="feed" priority={priority} />
-      <div className="poster-shade" />
-      <div className="slide-top">
-        <span className="editorial-badge">
-          <Sparkles size={13} />
-          {entity.kind === "tv" ? "THE SERIES EDIT" : "THE FILM EDIT"}
-        </span>
-        <span className="slide-rating">
-          <Star size={13} fill="currentColor" />
-          {entity.rating?.toFixed(1) ?? "—"}
-        </span>
-      </div>
-      <div className="slide-content">
-        <div className="title-meta">
-          <span>{entity.kind === "tv" ? "TV SERIES" : "FILM"}</span>
-          <span>{entity.year ?? "Date unavailable"}</span>
-          {entity.genres?.slice(0, 2).map((g) => (
-            <span key={g}>{genres.find(([id]) => g === `tmdb:genre:${id}`)?.[1]}</span>
-          ))}
-        </div>
-        <Link to="/title/$id" params={{ id: entity.id }} className="slide-title">
-          <h2>{entity.title}</h2>
-          <ArrowUpRight />
-        </Link>
-        <p className="slide-overview">
-          {entity.overview || "Every story starts with a little curiosity. Explore the details."}
-        </p>
-        <Tags entity={entity} userId={userId} />
-      </div>
-    </article>
+    <Card component="article" className="discovery-slide" h="100%" p={0} radius="lg" shadow="md">
+      <Flex direction={{ base: "column", md: "row" }} h="100%">
+        <Box
+          className="slide-artwork"
+          pos="relative"
+          w={{ base: "100%", md: "42%" }}
+          h={{ base: "42%", md: "100%" }}
+          bg="dark.9"
+        >
+          <Image
+            images={entityImages(entity)}
+            slot="feed"
+            priority={priority}
+            alt={`${entity.title} poster`}
+            fallback={<Empty title="No image">{entity.title}</Empty>}
+          />
+          <Box
+            data-artwork-sticker
+            pos="absolute"
+            top="var(--mantine-spacing-md)"
+            left="var(--mantine-spacing-md)"
+          >
+            <Badge
+              size="lg"
+              variant="gradient"
+              gradient={{ from: "violet.8", to: "pink.8", deg: 45 }}
+              leftSection={entity.kind === "tv" ? <Tv size={14} /> : <Film size={14} />}
+            >
+              {entity.kind === "tv" ? "TV series" : "Movie"}
+            </Badge>
+          </Box>
+          <Group
+            data-artwork-sticker
+            pos="absolute"
+            bottom="var(--mantine-spacing-md)"
+            left="var(--mantine-spacing-md)"
+            gap="xs"
+            aria-hidden="true"
+          >
+            <ThemeIcon color="yellow" variant="filled" radius="xl" size="xl">
+              <Popcorn size={24} />
+            </ThemeIcon>
+            <ThemeIcon color="pink" variant="light" radius="xl" size="lg">
+              <Ticket size={18} />
+            </ThemeIcon>
+          </Group>
+        </Box>
+        <ScrollArea
+          flex={1}
+          viewportProps={{
+            role: "region",
+            "aria-label": `${entity.title} information`,
+            tabIndex: 0,
+          }}
+        >
+          <Stack p={{ base: "md", sm: "xl" }} gap="lg">
+            <Group gap="xs" justify="space-between" wrap="nowrap" h="2rem">
+              <Text size="sm" c="cyan.3" fw={700} w="8rem" truncate>
+                {entity.year ?? "Date unavailable"}
+              </Text>
+              <Box w="4rem" h="1.5rem">
+                {!!entity.rating && (
+                  <Badge variant="filled" color="yellow" leftSection={<Star size={12} />}>
+                    {entity.rating.toFixed(1)}
+                  </Badge>
+                )}
+              </Box>
+            </Group>
+            <Anchor
+              renderRoot={(props) => <Link {...props} to="/title/$id" params={{ id: entity.id }} />}
+
+              className="slide-title"
+              c="inherit"
+              underline="hover"
+            >
+              <Title order={2} size="h1" lineClamp={2} h="2.5em">
+                {entity.title}
+              </Title>
+            </Anchor>
+            <Group gap="md" h="1.55rem" wrap="nowrap">
+              <Text size="sm" c="dimmed" truncate>
+                {entity.genres
+                  ?.slice(0, 3)
+                  .map((g) => genres.find(([id]) => g === `tmdb:genre:${id}`)?.[1])
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
+            </Group>
+            <Divider variant="dashed" color="violet.5" />
+            <Text size="sm" lineClamp={4} h="6.2em">
+              {entity.overview || "No synopsis available."}
+            </Text>
+            <Tags entity={entity} userId={userId} compact />
+            <Button
+              variant="filled"
+              color="yellow"
+              renderRoot={(props) => <Link {...props} to="/title/$id" params={{ id: entity.id }} />}
+              rightSection={<ChevronRight size={16} />}
+              leftSection={<Ticket size={18} />}
+              fullWidth
+            >
+              View details
+            </Button>
+          </Stack>
+        </ScrollArea>
+      </Flex>
+    </Card>
   );
 });
 export function Discover({ userId }: { userId: string }) {
@@ -124,6 +233,7 @@ export function Discover({ userId }: { userId: string }) {
     movies = useEntities("movie"),
     series = useEntities("tv"),
     displayKey = key,
+    [savedParams, setSavedParams] = useState<FeedParams | null>(null),
     [filters, setFilters] = useState(false),
     [genreSheet, setGenreSheet] = useState(false),
     [selection, setSelection] = useState(() => ({
@@ -242,139 +352,120 @@ export function Discover({ userId }: { userId: string }) {
     });
     return () => controller.abort();
   }, [approachingEnd, coverage?.nextCursor, coverage?.state, key]);
-  const activeTitle = titles[active];
+  const reducedMotion = useReducedMotion();
   return (
-    <div className="discover-page">
-      <PageHeading eyebrow="A GOOD NIGHT STARTS HERE" title="Find your next obsession.">
-        <span className="live-pill">
-          <i />
-          Made for your curiosity
-        </span>
-      </PageHeading>
-      <div className="discover-toolbar">
-        <div className="segmented" aria-label="Title type">
-          {(["both", "movie", "tv"] as const).map((type) => (
-            <button
-              key={type}
-              className={params.type === type ? "active" : ""}
-              onClick={() => update({ type })}
+    <Stack gap="lg">
+      <PageHeading title="Discover" />
+      <Paper withBorder p="sm" radius="lg">
+        <Group justify="space-between" gap="sm">
+          <SegmentedControl
+            color="violet.7"
+            radius="xl"
+            aria-label="Title type"
+            value={params.type}
+            onChange={(type) => update({ type: type as FeedParams["type"] })}
+            data={[
+              { value: "both", label: "All titles" },
+              { value: "movie", label: "Movies" },
+              { value: "tv", label: "TV shows" },
+            ]}
+          />
+          <Group gap="sm">
+            <Button
+              variant="light"
+              color="pink"
+              rightSection={<ChevronDown size={14} />}
+              w="10rem"
+              onClick={() => setGenreSheet(true)}
             >
-              {type === "both" ? "For you" : type === "movie" ? "Movies" : "TV shows"}
-            </button>
-          ))}
-        </div>
-        <div className="filter-chips">
-          <button
-            className={`chip ${params.genres.length ? "chip-active" : ""}`}
-            onClick={() => setGenreSheet(true)}
-          >
-            {params.genres.length ? `${params.genres.length} genres` : "All genres"}
-            <ChevronDown size={14} />
-          </button>
-          <label className="chip sort-chip">
-            <span className="sr-only">Sort titles</span>
-            <select
+              {params.genres.length ? `${params.genres.length} genres` : "All genres"}
+            </Button>
+            <NativeSelect
               aria-label="Sort titles"
+              w="11rem"
               value={params.sort}
               onChange={(e) => update({ sort: e.target.value as FeedParams["sort"] })}
+              data={[
+                { value: "popularity", label: "Popularity" },
+                { value: "trending", label: "Trending" },
+                { value: "rating", label: "Highest rated" },
+                { value: "lowest", label: "Lowest rated" },
+                { value: "newest", label: "Newest first" },
+                { value: "oldest", label: "Oldest first" },
+                { value: "random", label: "Random" },
+                { value: "relevance", label: "Relevance" },
+              ]}
+            />
+            <Button
+              variant="light"
+              color="cyan"
+              aria-label="Customize feed filters"
+              leftSection={<SlidersHorizontal size={16} />}
+              onClick={() => setFilters(true)}
             >
-              <option value="popularity">Popular now</option>
-              <option value="trending">Trending</option>
-              <option value="rating">Highest rated</option>
-              <option value="lowest">Lowest rated</option>
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="random">Surprise me</option>
-              <option value="relevance">For my taste</option>
-            </select>
-            <ChevronDown size={14} />
-          </label>
-          <button
-            className="chip"
-            aria-label="Customize feed filters"
-            onClick={() => setFilters(true)}
-          >
-            <SlidersHorizontal size={15} />
-            <span>Filters</span>
-          </button>
-          <button
-            className="chip save-feed"
-            aria-label="Save this feed"
-            onClick={() => {
-              const title = window.prompt("Name this feed");
-              if (title)
-                void send({ type: "feed.save", title, params }, userId)
-                  .then(() => notify("Your feed is saved to your profile."))
-                  .catch(report);
+              Filters
+            </Button>
+            <ActionIcon
+              aria-label="Save this feed"
+              variant="light"
+              color="yellow"
+              onClick={() => setSavedParams(params)}
+            >
+              <Bookmark size={18} />
+            </ActionIcon>
+          </Group>
+        </Group>
+      </Paper>
+      <Box>
+        {titles.length ? (
+          <Box
+            component={Swiper}
+            h="40rem"
+            key={displayKey}
+            modules={[Keyboard, Mousewheel, Virtual, A11y]}
+            direction="vertical"
+            noSwipingSelector="button, a, input, select, label, [role=dialog]"
+            slidesPerView={1}
+            spaceBetween={20}
+            speed={reducedMotion ? 0 : 300}
+            mousewheel={{ forceToAxis: true }}
+            keyboard={{ enabled: true }}
+            virtual={{ enabled: true, addSlidesBefore: 1, addSlidesAfter: 2, cache: false }}
+            initialSlide={Math.min(active, titles.length - 1)}
+            onSwiper={(s) => {
+              swiper.current = s;
             }}
+            onSlideChange={(s) => {
+              setActive(s.activeIndex);
+              sessionStorage.setItem(`feed-position:${displayKey}`, fieldText(s.activeIndex));
+            }}
+            className="discovery-swiper"
           >
-            <Bookmark size={15} />
-          </button>
-        </div>
-      </div>
-      {(coverage?.state === "error" || !!coverage?.unsupported.length) && (
-        <div className="mobile-feed-status">
-          {coverage?.state === "error" && (
-            <p role="status">Catalog refresh paused. Your cached picks are here.</p>
-          )}
-          {!!coverage?.unsupported.length && (
-            <details>
-              <summary>About these filters</summary>
-              {coverage.unsupported.map((text) => (
-                <p key={text}>{text}</p>
-              ))}
-            </details>
-          )}
-        </div>
-      )}
-      <div className="feed-layout">
-        <div className="feed-stage">
-          {titles.length ? (
-            <Swiper
-              key={displayKey}
-              modules={[Keyboard, Mousewheel, Virtual, A11y]}
-              direction="vertical"
-              noSwipingSelector="button, a, input, select"
-              slidesPerView={1}
-              spaceBetween={20}
-              mousewheel={{ forceToAxis: true }}
-              keyboard={{ enabled: true }}
-              virtual={{ enabled: true, addSlidesBefore: 1, addSlidesAfter: 2, cache: false }}
-              initialSlide={Math.min(active, titles.length - 1)}
-              onSwiper={(s) => {
-                swiper.current = s;
-              }}
-              onSlideChange={(s) => {
-                setActive(s.activeIndex);
-                sessionStorage.setItem(`feed-position:${displayKey}`, fieldText(s.activeIndex));
-              }}
-              className="discovery-swiper"
-            >
-              {titles.map((entity, index) => (
-                <SwiperSlide key={entity.id} virtualIndex={index}>
-                  <Slide entity={entity} priority={index === active} userId={userId} />
-                </SwiperSlide>
-              ))}
-            </Swiper>
-          ) : (
-            <div className="feed-empty">
-              <div className="feed-empty-orbit">✦</div>
+            {titles.map((entity, index) => (
+              <SwiperSlide key={entity.id} virtualIndex={index}>
+                <Slide entity={entity} priority={index === active} userId={userId} />
+              </SwiperSlide>
+            ))}
+          </Box>
+        ) : (
+          <Paper withBorder h="40rem">
+            <Stack align="center" justify="center" h="100%" py="xl">
               <Empty
                 title={
                   coverage?.state === "error"
-                    ? "The catalog is taking a break."
+                    ? "Unable to refresh titles"
                     : coverage?.state === "complete"
-                      ? "A plot twist: no matches."
-                      : "Your next story is on its way."
+                      ? "No matching titles"
+                      : "Fetching titles"
                 }
               >
                 {coverage?.message ??
                   (coverage?.state === "complete"
-                    ? "Try a wider set of filters. There’s a whole world to discover."
-                    : "We’re gathering these titles. They’ll appear here as soon as they arrive.")}
+                    ? "Adjust or reset the filters to see more titles."
+                    : "Titles will appear as they become available.")}
               </Empty>
               <Button
-                variant="outline"
+                variant="default"
                 onClick={() =>
                   coverage?.state === "complete"
                     ? update(feedParams.parse({}))
@@ -383,319 +474,336 @@ export function Discover({ userId }: { userId: string }) {
               >
                 {coverage?.state === "complete" ? "Reset filters" : "Try again"}
               </Button>
-            </div>
-          )}
-          <div className="swipe-hint">
-            <ArrowDown size={13} />
-            <span>Swipe for your next great watch</span>
-            <span className="feed-count">
-              {titles.length ? active + 1 : 0} / {titles.length}
-              {coverage?.nextCursor ? " +" : ""}
-            </span>
-          </div>
-        </div>
-        <aside className="feed-aside">
-          <div className="aside-note">
-            <span className="eyebrow">THE JOY OF DISCOVERY</span>
-            <h2>
-              Go in curious.
-              <br />
-              Come out <em>obsessed.</em>
-            </h2>
-            <p>
-              A familiar favorite. An unexpected find.
-              <br />
-              There’s always another story.
-            </p>
-            <div className="note-rule" />
-            <div className="aside-instructions">
-              <span>01</span>
-              <p>Swipe to explore something new</p>
-              <span>02</span>
-              <p>Leave a take. Trust your taste.</p>
-              <span>03</span>
-              <p>Make a list for your next movie night</p>
-            </div>
-          </div>
-          <div className="taste-note">
-            <span className="taste-icon">
-              <HeartIcon />
-            </span>
-            <div>
-              <strong>Your taste, your rules.</strong>
-              <p>
-                Seen it? Loved it? Just not your thing?
-                <br />
-                Keep track with a single tap.
-              </p>
-            </div>
-          </div>
-          {coverage && coverage.state !== "complete" && (
-            <div role="status" className="coverage-note">
-              {coverage.state === "error"
-                ? "Catalog refresh paused. Cached titles are available."
-                : titles.length
-                  ? "Fresh picks are arriving. Keep exploring."
-                  : "Connecting the dots behind the scenes."}
-            </div>
-          )}
-          {coverage?.unsupported.map((text) => (
-            <p key={text} className="coverage-note">
-              {text}
-            </p>
+            </Stack>
+          </Paper>
+        )}
+        <Group justify="space-between" mt="sm" px="xs">
+          <Text size="sm" c="dimmed">
+            Swipe or use the arrows to browse
+          </Text>
+          <Group gap="xs">
+            <ActionIcon
+              aria-label="Previous title"
+              variant="light"
+              color="violet"
+              disabled={!titles.length || active === 0}
+              onClick={() => swiper.current?.slidePrev()}
+            >
+              <ArrowUp size={18} />
+            </ActionIcon>
+            <Group w="8rem" gap={0} wrap="nowrap" aria-label="Title position">
+              <Text size="sm" ff="monospace" w="5ch">
+                {titles.length ? active + 1 : 0}
+              </Text>
+              <Text size="sm" ff="monospace" w="2ch">
+                /
+              </Text>
+              <Text size="sm" ff="monospace" w="5ch">
+                {titles.length}
+              </Text>
+              <Text size="sm" ff="monospace" w="1ch">
+                {coverage?.nextCursor ? "+" : ""}
+              </Text>
+            </Group>
+            <ActionIcon
+              aria-label="Next title"
+              variant="light"
+              color="violet"
+              disabled={!titles.length || active >= titles.length - 1}
+              onClick={() => swiper.current?.slideNext()}
+            >
+              <ArrowDown size={18} />
+            </ActionIcon>
+          </Group>
+        </Group>
+      </Box>
+      {coverage?.state === "error" && (
+        <Alert color="red" title="Catalog refresh paused">
+          Cached titles are available. {coverage.message}
+        </Alert>
+      )}
+      {!!coverage?.unsupported.length && (
+        <Alert title="Filter availability">
+          {coverage.unsupported.map((message) => (
+            <Text key={message} size="sm">
+              {message}
+            </Text>
           ))}
-          {activeTitle && (
-            <Link to="/title/$id" params={{ id: activeTitle.id }} className="aside-detail">
-              Take a closer look
-              <ArrowUpRight size={18} />
-            </Link>
-          )}
-        </aside>
-      </div>
-      <Sheet
-        open={genreSheet}
-        onOpenChange={setGenreSheet}
-        title="What’s your kind of story?"
-        description="Mix a few genres. See where they take you."
-      >
-        <div className="sheet-body genre-options">
-          {genres
-            .filter(
-              ([id]) =>
-                params.type === "both" ||
-                params.genres.includes(id) ||
-                (params.type === "movie" ? movieGenreIds : tvGenreIds).includes(id),
-            )
-            .map(([id, name]) => (
-              <button
-                key={id}
-                className={`chip ${params.genres.includes(id) ? "chip-active" : ""}`}
-                aria-pressed={params.genres.includes(id)}
-                onClick={() =>
-                  update({
-                    genres: params.genres.includes(id)
-                      ? params.genres.filter((g) => g !== id)
-                      : [...params.genres, id],
-                  })
-                }
-              >
-                {name}
-              </button>
-            ))}
-          <Button onClick={() => setGenreSheet(false)}>Find my next watch</Button>
-        </div>
-      </Sheet>
+        </Alert>
+      )}
+      <Drawer opened={genreSheet} onClose={() => setGenreSheet(false)} title="Genres">
+        <Stack>
+          <Checkbox.Group
+            label="Filter by genre"
+            value={params.genres.map(String)}
+            onChange={(values) => update({ genres: values.map(Number) })}
+          >
+            <SimpleGrid cols={{ base: 1, xs: 2 }} mt="md">
+              {genres
+                .filter(
+                  ([id]) =>
+                    params.type === "both" ||
+                    params.genres.includes(id) ||
+                    (params.type === "movie" ? movieGenreIds : tvGenreIds).includes(id),
+                )
+                .map(([id, name]) => (
+                  <Checkbox key={id} value={String(id)} label={name} />
+                ))}
+            </SimpleGrid>
+          </Checkbox.Group>
+          <Button onClick={() => setGenreSheet(false)}>Done</Button>
+        </Stack>
+      </Drawer>
       <FilterSheet
         open={filters}
         setOpen={setFilters}
         params={params}
         update={update}
-        userId={userId}
+        onSave={(value) => {
+          setFilters(false);
+          setSavedParams(value);
+        }}
       />
-    </div>
+      <SaveFeed params={savedParams} userId={userId} onClose={() => setSavedParams(null)} />
+    </Stack>
   );
 }
-function HeartIcon() {
-  return <span>♡</span>;
+function SaveFeed({
+  params,
+  userId,
+  onClose,
+}: {
+  params: FeedParams | null;
+  userId: string;
+  onClose: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  return (
+    <Modal opened={!!params} onClose={onClose} title="Save feed">
+      <Box
+        component="form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!params || saving) return;
+          const title = fieldText(new FormData(event.currentTarget).get("title") ?? "").trim();
+          if (!title) return;
+          setSaving(true);
+          void send({ type: "feed.save", title, params }, userId)
+            .then(() => {
+              onClose();
+              notify("Feed saved.");
+            })
+            .catch(report)
+            .finally(() => setSaving(false));
+        }}
+      >
+        <Stack>
+          <TextInput name="title" label="Feed name" required maxLength={120} data-autofocus />
+          <Group justify="flex-end">
+            <Button type="button" variant="default" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving}>
+              Save feed
+            </Button>
+          </Group>
+        </Stack>
+      </Box>
+    </Modal>
+  );
 }
 function FilterSheet({
-  userId,
   open,
   setOpen,
   params,
   update,
+  onSave,
 }: {
-  userId: string;
   open: boolean;
   setOpen: (v: boolean) => void;
   params: FeedParams;
   update: (p: Partial<FeedParams>) => void;
+  onSave: (params: FeedParams) => void;
 }) {
   const lists = useEntities("list");
+  const parse = (form: HTMLFormElement) => {
+    const result = parseFeedParams.safeParse({
+      ...params,
+      ...Object.fromEntries(new FormData(form)),
+      cursor: undefined,
+    });
+    if (!result.success) {
+      notify(result.error.issues[0]?.message ?? "Check your filters");
+      return;
+    }
+    return result.data;
+  };
   return (
-    <Sheet
-      open={open}
-      onOpenChange={setOpen}
-      title="Make it your kind of night."
-      description="Layer your filters. We’ll find the stories."
-    >
-      <form
-        className="sheet-body filter-form"
+    <Drawer opened={open} onClose={() => setOpen(false)} title="Feed filters">
+      <Box
+        component="form"
         key={stableSerialize(params)}
-        onSubmit={(e) => {
-          e.preventDefault();
-          const data = Object.fromEntries(new FormData(e.currentTarget));
-          const result = feedParams.safeParse({ ...params, ...data, cursor: undefined });
-          if (!result.success) {
-            notify(result.error.issues[0]?.message ?? "Check your filters");
-            return;
+        onSubmit={(event) => {
+          event.preventDefault();
+          const result = parse(event.currentTarget);
+          if (result) {
+            update(result);
+            setOpen(false);
           }
-          update(result.data);
-          setOpen(false);
         }}
       >
-        <div className="form-grid">
-          <label>
-            Seen status
-            <select name="seen" defaultValue={params.seen}>
-              <option value="all">Anything</option>
-              <option value="unseen">Not seen yet</option>
-              <option value="seen">Seen it</option>
-            </select>
-          </label>
-          <label>
-            Your take
-            <select name="sentiment" defaultValue={params.sentiment}>
-              {["all", "liked", "meh", "disliked", "unrated"].map((s) => (
-                <option key={s} value={s}>
-                  {s === "all" ? "Any opinion" : s}
-                </option>
-              ))}
-            </select>
-          </label>
-          {[
-            ["yearMin", "From year", "e.g. 1990"],
-            ["yearMax", "To year", "e.g. 2026"],
-            ["runtimeMin", "Min. runtime (min)", "0"],
-            ["runtimeMax", "Max. runtime (min)", "180"],
-            ["ratingMin", "Min. rating", "0"],
-            ["ratingMax", "Max. rating", "10"],
-            ["votesMin", "Minimum votes", "100"],
-            ["popularityMin", "Min. popularity", "0"],
-            ["popularityMax", "Max. popularity", "1000"],
-          ].map(([key, label, placeholder]) => (
-            <label key={key}>
-              {label}
-              <input
+        <Stack>
+          <SimpleGrid cols={{ base: 1, xs: 2 }}>
+            <NativeSelect
+              name="seen"
+              label="Seen status"
+              defaultValue={params.seen}
+              data={[
+                { value: "all", label: "All titles" },
+                { value: "unseen", label: "Unseen" },
+                { value: "seen", label: "Seen" },
+              ]}
+            />
+            <NativeSelect
+              name="sentiment"
+              label="Sentiment"
+              defaultValue={params.sentiment}
+              data={[
+                { value: "all", label: "All sentiments" },
+                ...["liked", "meh", "disliked", "unrated"].map((value) => ({
+                  value,
+                  label: value,
+                })),
+              ]}
+            />
+            {[
+              ["yearMin", "From year"],
+              ["yearMax", "To year"],
+              ["runtimeMin", "Min. runtime (min)"],
+              ["runtimeMax", "Max. runtime (min)"],
+              ["ratingMin", "Min. rating"],
+              ["ratingMax", "Max. rating"],
+              ["votesMin", "Minimum votes"],
+              ["popularityMin", "Min. popularity"],
+              ["popularityMax", "Max. popularity"],
+            ].map(([key, label]) => (
+              <NumberInput
+                key={key}
                 name={key}
-                type="number"
-                step={key?.startsWith("rating") || key?.startsWith("popularity") ? "0.1" : "1"}
-                min="0"
-                placeholder={placeholder}
-                defaultValue={fieldText(params[key as keyof FeedParams] ?? "")}
+                label={label}
+                min={0}
+                step={key!.startsWith("rating") || key!.startsWith("popularity") ? 0.1 : 1}
+                defaultValue={params[key as keyof FeedParams] as number | undefined}
               />
-            </label>
-          ))}
-          <label>
-            Original language
-            <input
+            ))}
+            <TextInput
               name="language"
-              placeholder="en, fr, ko…"
+              label="Original language"
+              description="Two-letter code, such as en"
               maxLength={2}
               defaultValue={params.language}
             />
-          </label>
-          <label>
-            Origin country
-            <input
+            <TextInput
               name="country"
-              placeholder="US, FR, KR…"
+              label="Origin country"
+              description="Two-letter code, such as US"
               maxLength={2}
               defaultValue={params.country}
             />
-          </label>
-          <label>
-            Released after
-            <input name="dateMin" type="date" defaultValue={params.dateMin} />
-          </label>
-          <label>
-            Released before
-            <input name="dateMax" type="date" defaultValue={params.dateMax} />
-          </label>
-          <label>
-            In list
-            <select name="list" defaultValue={params.list ?? ""}>
-              <option value="">Any list</option>
-              {lists.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Not in list
-            <select name="notInList" defaultValue={params.notInList ?? ""}>
-              <option value="">No exclusion</option>
-              {lists.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.title}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <details>
-          <summary>Cast, themes & streaming</summary>
-          <p className="field-note">
-            Use TMDB numeric IDs for precise matching. Cast and crew discovery currently requires
-            Movies. TV has its own genre IDs.
-          </p>
-          {[
-            ["cast", "Cast IDs"],
-            ["crew", "Director / crew IDs"],
-            ["keywords", "Keyword / theme IDs"],
-            ["excludeGenres", "Exclude genre IDs"],
-            ["providers", "Streaming provider IDs"],
-          ].map(([key, label]) => (
-            <label key={key}>
-              {label}
-              <input
-                name={key}
-                placeholder="Comma-separated IDs"
-                defaultValue={(params[key as "cast"] ?? []).join(",")}
-              />
-            </label>
-          ))}
-          <label>
-            Streaming region
-            <input name="region" maxLength={2} defaultValue={params.region} />
-          </label>
-        </details>
-        <div className="sheet-actions">
-          <Button
-            variant="ghost"
-            type="button"
-            onClick={() => {
-              update(feedParams.parse({}));
-              setOpen(false);
-            }}
-          >
-            Clear filters
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={(event) => {
-              const form = event.currentTarget.form;
-              if (!form) return;
-              const result = feedParams.safeParse({
-                ...params,
-                ...Object.fromEntries(new FormData(form)),
-                cursor: undefined,
-              });
-              if (!result.success) {
-                notify(result.error.issues[0]?.message ?? "Check these filters");
-                return;
-              }
-              const title = window.prompt("Name this feed");
-              if (title)
-                void send({ type: "feed.save", title, params: result.data }, userId)
-                  .then(() => {
-                    setOpen(false);
-                    notify("Your feed is saved to your profile.");
-                  })
-                  .catch(report);
-            }}
-          >
-            Save feed
-          </Button>
-          <Button type="submit">
-            Find my next watch
-            <ArrowUpRight size={16} />
-          </Button>
-        </div>
-      </form>
-    </Sheet>
+            <DateInput
+              name="dateMin"
+              label="Released after"
+              defaultValue={params.dateMin || null}
+              valueFormat="YYYY-MM-DD"
+              clearable
+            />
+            <DateInput
+              name="dateMax"
+              label="Released before"
+              defaultValue={params.dateMax || null}
+              valueFormat="YYYY-MM-DD"
+              clearable
+            />
+            <NativeSelect
+              name="list"
+              label="In list"
+              defaultValue={params.list ?? ""}
+              data={[
+                { value: "", label: "Any list" },
+                ...lists.map((l) => ({ value: l.id, label: l.title })),
+              ]}
+            />
+            <NativeSelect
+              name="notInList"
+              label="Not in list"
+              defaultValue={params.notInList ?? ""}
+              data={[
+                { value: "", label: "No exclusion" },
+                ...lists.map((l) => ({ value: l.id, label: l.title })),
+              ]}
+            />
+          </SimpleGrid>
+          <Accordion variant="default">
+            <Accordion.Item value="advanced">
+              <Accordion.Control>Cast, themes &amp; streaming</Accordion.Control>
+              <Accordion.Panel>
+                <Stack>
+                  <Text size="sm" c="dimmed">
+                    Use TMDB numeric IDs for precise matching. Cast and crew filters require Movies.
+                    TV uses its own genre IDs.
+                  </Text>
+                  {[
+                    ["cast", "Cast IDs"],
+                    ["crew", "Director / crew IDs"],
+                    ["keywords", "Keyword / theme IDs"],
+                    ["excludeGenres", "Exclude genre IDs"],
+                    ["providers", "Streaming provider IDs"],
+                  ].map(([key, label]) => (
+                    <TextInput
+                      key={key}
+                      name={key}
+                      label={label}
+                      description="Comma-separated IDs"
+                      defaultValue={(params[key as "cast"] ?? []).join(",")}
+                    />
+                  ))}
+                  <TextInput
+                    name="region"
+                    label="Streaming region"
+                    maxLength={2}
+                    defaultValue={params.region}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
+          <Group>
+            <Button
+              variant="subtle"
+              type="button"
+              onClick={() => {
+                update(feedParams.parse({}));
+                setOpen(false);
+              }}
+            >
+              Clear filters
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              onClick={(event) => {
+                const form = event.currentTarget.form;
+                if (!form || !form.reportValidity()) return;
+                const result = parse(form);
+                if (result) onSave(result);
+              }}
+            >
+              Save feed
+            </Button>
+            <Button type="submit">Apply filters</Button>
+          </Group>
+        </Stack>
+      </Box>
+    </Drawer>
   );
 }

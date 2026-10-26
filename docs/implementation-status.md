@@ -1,10 +1,10 @@
 # Implementation and verification status
 
-Updated on 2026-10-16 (America/Phoenix). This is an implementation handoff, not a claim of completed production deployment.
+Updated on 2026-10-25 (America/Phoenix). This is an implementation handoff, not a claim of completed production deployment.
 
 ## Delivered application
 
-The repository now contains a functioning TypeScript/Bun application rather than only a specification. React 19, Vite+, TanStack Router, Tailwind/shadcn-style Radix primitives, Swiper, TanStack DB Query Collections, Hono RPC, Better Auth, Drizzle, PostgreSQL, Atlas, Zod, and Playwright are integrated.
+The repository now contains a functioning TypeScript/Bun application rather than only a specification. React 19, Vite+, TanStack Router, Mantine, Swiper, TanStack DB Query Collections, Hono RPC, Better Auth, Drizzle, PostgreSQL, Atlas, Zod, and Playwright are integrated.
 
 Implemented vertical features include protected registration/login/logout/session restoration and deep-link return; recovery-token issuance/consumption and session revocation; public profile editing and avatars; movie/TV discovery and composable/saved feeds; cursor pagination and global merging of sorted movie/TV source streams; independent optimistic viewing/opinion tags; public lists with stable item identities, editing, reorder handles/arrows, invitations/acceptance/decline, owner/editor permissions, copies and saves; user follows, activity, global catalog/social search, and scoped/paginated list/profile reads.
 
@@ -17,12 +17,12 @@ The selective source replica retains JSONB, revisions/checksums, projection-spec
 - `src/server/db`, `atlas/schema.sql`, `atlas/migrations`, `atlas.hcl`: isolated schema mapping and Atlas authority.
 - `src/server/entity-store`, `entity-store-sync`, `queries`: raw replica, normalization, provider ingestion/jobs/coverage, and declarative query definitions.
 - `src/server/auth.ts`, `app.ts`, `commands.ts`, `events.ts`, `social.ts`, `state.ts`, `static.ts`, `index.ts`: persisted authentication, typed APIs, authorization/concurrency, streaming/replay, public projections, and single-process serving.
-- `src/client`: canonical collections, query/subscription merging, optimistic commands/outbox, routing, code-split mobile UI, and accessible sheets/navigation.
+- `src/client`: canonical collections, query/subscription merging, optimistic commands/outbox, routing, Mantine UI, and accessible drawers/navigation.
 - `src/shared`: validated commands/feeds/events, identities, filter semantics, genre taxonomies, and URL serialization.
 - `scripts`, `tests`, `.github/workflows`, `Dockerfile`: development supervision, isolated PostgreSQL tests, Atlas verification, live catalog/container smoke, and centralized publishing configuration.
 - `README.md`, `AGENTS.md`, and `docs/*`: setup, actual architecture/contracts, verification, and prepared infrastructure handoff.
 
-The supplied SPEC.md is unchanged. No pre-existing application code, legacy deployment, shared database, shared policy, or infrastructure allocation was overwritten. Development database diagnostics read application catalog metadata only; shared DDL and writes remain unperformed.
+The UI technology requirements in SPEC.md now reflect the requested React/Mantine-only architecture. No pre-existing application code, legacy deployment, shared database, shared policy, or infrastructure allocation was overwritten. Development database diagnostics read application catalog metadata only; shared DDL and writes remain unperformed.
 
 ## Verification evidence
 
@@ -350,3 +350,166 @@ state API. Live credential and recovery endpoints returned HTTP 404. The app rem
 its registered localhost port, with the browser returned to the redesigned authentication page.
 Google branding is based on the published pre-approved asset; this does not claim Google's app
 verification or the shared relay's broader production acceptance.
+
+## React and Mantine UI overhaul — 2026-10-25
+
+All existing screens now use Mantine 9.7.3 with one theme and provider setup:
+authentication, discovery and all filters, catalog/social search, movie/TV/person/
+season/episode details, lists and collaboration, activity/invitations, profiles,
+route previews, errors and not-found states. Navigation uses a responsive AppShell;
+labels and feedback use neutral app language. Existing routes, canonical entity
+collections, optimistic commands, permissions, authentication and server APIs remain
+in place. Tailwind, Radix primitive wrappers and their styling dependencies were
+removed along with the 2,972-line stylesheet.
+
+The remaining application CSS covers persistent browser scrollbar space, touch
+dragging and the focus-revealed skip link. Swiper supplies virtual vertical gesture navigation,
+with its viewport configured through Mantine Box; Lucide supplies icons. Google's
+unmodified sign-in bitmap remains the provider-brand exception. These boundaries,
+the route inventory and implementation conventions are in [UI conventions](ui.md).
+AGENTS.md, SPEC.md and the architecture check now enforce the same UI direction.
+
+Validation: formatting, type-aware lint, native TypeScript and all 75 unit tests
+pass; all 71 isolated database integration cases pass; production compilation,
+Atlas migration integrity and the embedded database lifecycle case pass. The full
+68-case mobile/desktop production-browser suite passed. Six focused browser cases
+then rechecked the final feed composition, virtual swiping, the complete automated
+accessibility route matrix, and additional 320 px/768 px layouts. This includes
+the two additional narrow/tablet cases (70 distinct production-browser cases in
+total). Both development observability cases pass, including correlated API/SQL/
+provider traces and privacy checks. Representative rendered screenshots were
+reviewed at phone, tablet and desktop sizes. Automated WCAG A/AA scans have no
+reported violations on the tested screens; this is not a complete accessibility
+certification or verification of every browser/assistive-technology combination.
+
+The build retains its eager application-chunk size warning (approximately 1.37 MB
+minified, 414 KB gzip). Routes remain available before interaction; the existing
+no-additional-screen-script and under-100 ms cold-navigation checks at 4x CPU
+throttling still pass. Live Google, live catalog data and production deployment
+were not reverified by this UI-only change. Verification uses isolated local
+PostgreSQL and OAuth/catalog fixtures, with no shared infrastructure changes.
+
+## Local startup and Google sign-in repair (2026-10-25)
+
+Vite binds to localhost and prints a single local URL instead of enumerating the
+machine's interface aliases. Development startup warns when this checkout lacks
+Google registration settings and requires a fixed callback port for explicit
+OIDC configuration. Regression coverage checks saved-port selection, mismatches,
+explicit overrides and partial configuration.
+
+This worktree lacked its ignored `.local/auth-relay.json`. Its own nonproduction
+registration was created through the authorized relay console and read back with
+the exact callback and 2026-10-31 expiry. The returned public settings were saved
+only in that ignored file. After a managed restart, live Google sign-in and
+session reload succeeded in the super.engineering WebKit browser at
+`http://localhost:58553`; startup printed one URL. No shared infrastructure or
+application schema was changed.
+
+`bun run check` passed all 76 unit tests, lint, formatting and native type checks;
+`bun run build` passed with the existing chunk-size warning; all 71 isolated
+integration tests and all 70 mobile/desktop browser tests passed. The broad synthetic performance run timed out in a
+prepared-person navigation wait and is not a completed performance result.
+
+## Layout stability — 2026-10-25
+
+The native page scrollbar and gutter are permanent, including during modal and
+drawer scroll isolation. Mantine scroll areas keep their vertical gutter at all
+times; AppShell avoids double scrollbar compensation. Dialogs use top anchoring.
+
+Loading, empty, failed and hydrated views now share reserved geometry across
+authentication, discovery, search, catalog detail types, profiles, activity, list
+screens and pickers. Detail/profile headers are shared with route previews;
+canonical rows remain visible while live queries attach. Artwork, text, counts,
+independent status badges and permission-dependent actions retain their slots.
+Search provider arrivals and incoming activity preserve existing row positions;
+Refresh order / Show latest explicitly apply the latest ranking or time order.
+The ordering helper stores UI IDs only, not duplicate server entities.
+
+The browser regressions exercise delayed state/provider/detail/profile/list data,
+late images, independent Seen/Liked updates, live profile edits, incoming activity,
+permission arrival, real classic native scrollbars, and modal/drawer transitions.
+They compare exact rectangles and reject every raw layout-shift event, including
+recent-input shifts. Development layout telemetry retains full numeric precision;
+the performance harness can report affected static element geometry with no text,
+URLs, DOM IDs or user fields. See [UI conventions](ui.md) and
+[profiling instructions](observability.md).
+
+Validation: formatting, type-aware lint, native TypeScript and all 76 unit tests
+pass. All 71 isolated PostgreSQL integration cases and the full 94-case
+mobile/desktop Chromium production-browser suite pass. The latter includes 24
+strict layout cases with exact rectangles and raw shift values, covering failed
+requests, retry and automatic notification dismissal as well as successful data
+arrival. Both development observability cases pass. The final complete synthetic
+browsing run at 4× CPU throttling recorded 15,543 events, zero layout-shift events
+and zero browser errors. It includes cold/prepared/cached details, a growing
+client database, lists, activity, profiles and progressive search. These are
+fixture-based measurements, not a universal browser or live-provider guarantee.
+
+The scrollbar hit-area exception is documented against Mantine 9.7.3; thumb
+dragging and keyboard scrolling remain functional. Notifications use Mantine's
+top-anchored stacked layout without entry/height transitions, preserving its
+queue and dismissal behavior. Production compilation passes with the existing
+bundle size warning (approximately 1.37 MB minified / 416 KB gzip). No shared
+database or infrastructure operations were performed.
+
+The final mobile/desktop accessibility route-and-drawer audit also passed on a
+fresh production rebuild, and representative final desktop/mobile screenshots
+were visually reviewed. Screenshots remain in ignored local test artifacts.
+
+## Cinema visual design — 2026-10-25
+
+The shared Mantine theme now uses dark charcoal surfaces, warm yellow accents,
+system-serif headings and system-sans body and catalog-card text. Navigation,
+discovery, search, sign-in, lists, profiles and asynchronous sections share the
+same framing and typography. Poster-led catalog cards retain independent full-width
+rating, Seen and Liked slots, including in narrow multi-column grids.
+
+Movie and person details share a framed artwork hero. Person screens have portrait,
+life-fact cells and a larger reserved biography viewport. Their filmography tabs
+are present during cold loading and preserve selection through hydration. Detail
+sections use canonical route kind; skeleton and hydrated collections retain the
+same mounted scroll viewport. Decorative artwork stays outside document flow.
+No application APIs, canonical collections, commands or database schema changed.
+
+Browser regression coverage now includes exact movie and person hero/section
+rectangles during cold hydration, delayed movie/person artwork, and person
+screens at 320px and 768px. Image assertions distinguish decorative artwork from
+the meaningful poster or portrait. Strict raw zero-shift assertions are retained.
+
+Validation: `bun run check` passes formatting, lint, native types and all 76 unit
+tests. The production build and full 100-case mobile/desktop browser suite pass,
+including 30 strict layout cases and accessibility/responsive checks. A subsequent
+four-case cold movie/person run also passes after enriching the person response
+with synthetic life facts and a long biography, while keeping the hero in view
+during shift observation. All rectangles remain exact and raw shift arrays empty.
+Representative movie/person layouts were visually reviewed at narrow and tablet
+widths. The existing production bundle-size warning remains (approximately
+1.38 MB minified / 417 KB gzip). No shared database or deployment operations ran.
+
+## Playful movie-night styling — 2026-10-25
+
+The visual direction now uses bold system-sans headings, rounded surfaces, pill
+controls and brighter yellow, violet, pink and cyan accents. Shared cards have
+fixed colour strips; movie/person heroes use ticket edges and popcorn/sparkle
+stickers. Discovery and sign-in carry the same cinema-ticket motif. Navigation
+destinations and reactions have distinct colours while retaining their existing
+labels, focus behavior and command semantics.
+
+All decoration uses Mantine components and supported props. Artwork stickers are
+bounded within the artwork frame; ticket strips and cutouts stay outside document
+flow. Dimension/position props explicitly reference existing spacing variables.
+The shared forced-dark theme uses one primary shade so automatic filled-label
+contrast matches the rendered background. The violet type filter uses a darker
+explicit shade. Responsive regressions now verify every discovery sticker edge
+stays inside its artwork at 320px and 768px, and accessibility checks exercise
+each selected reaction as well as ordinary route/drawer states.
+
+Validation: formatting, lint, native TypeScript and all 76 unit tests pass; the
+production build passes with the existing bundle-size warning. The full browser
+run passed 98 cases and exposed two contrast failures, which were corrected.
+The subsequent geometry/workflow run passed all 30 strict layout cases, both
+320px/768px responsive cases and both registration/tagging/list workflows.
+Expanded mobile/desktop accessibility audits then passed after setting the shared
+black/white luminance crossover, including all four selected reactions and every
+existing route/drawer audit. Representative movie/person screenshots were visually
+reviewed. No test tolerances, exclusions or functionality were weakened.

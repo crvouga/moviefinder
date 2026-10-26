@@ -1,6 +1,22 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "@tanstack/react-router";
-import { Film } from "lucide-react";
+import {
+  Alert,
+  Button,
+  ScrollArea,
+  Center,
+  Container,
+  Divider,
+  Group,
+  Image,
+  Paper,
+  Stack,
+  Text,
+  ThemeIcon,
+  Title,
+  UnstyledButton,
+} from "@mantine/core";
+import { Clapperboard, Film, Popcorn, Ticket } from "lucide-react";
 import { authClient } from "../auth-client";
 import { safeReturnTo } from "../../shared/contracts";
 
@@ -57,72 +73,83 @@ export function AuthPage() {
     }
   }
   return (
-    <main className="auth-screen">
-      <section className="auth-art" aria-label="Welcome to MovieFinder">
-        <a href="/auth" className="brand">
-          <span className="brand-icon">
-            <Film size={19} />
-          </span>
-          moviefinder<span className="brand-dot">.</span>
-        </a>
-        <div className="auth-art-copy">
-          <span className="eyebrow">FOR THE LOVE OF A GOOD STORY</span>
-          <h1>
-            Less scrolling.
-            <br />
-            More <em>cinema.</em>
-          </h1>
-          <p>
-            The next film you love is out there.
-            <br />
-            Find it. Make a list. Bring your people.
-          </p>
-          <div className="auth-art-line" />
-        </div>
-        <span className="auth-note">A little curiosity. A great movie night.</span>
-      </section>
-      <section className="auth-form-wrap" aria-labelledby="auth-title">
-        <a href="/auth" className="auth-mobile-brand">
-          <Film aria-hidden="true" /> moviefinder.
-        </a>
-        <div className="auth-form">
-          <span className="eyebrow">A GOOD NIGHT STARTS HERE</span>
-          <h2 id="auth-title">
-            Your next great
-            <br />
-            watch awaits.
-          </h2>
-          <p>
-            Save what catches your eye. Make a collection.
-            <br className="auth-desktop-break" /> Find something you’ll love.
-          </p>
-          <button
-            className="google-signin"
-            type="button"
-            aria-label="Sign in with Google"
-            disabled={availability !== "ready" || busy}
-            onClick={() => void signInWithGoogle()}
-          >
-            <img src="/brand/google-signin-light.png" width="216" height="48" alt="" />
-          </button>
-          <p className="auth-account-note">One sign-in. A world of good stories.</p>
-          <div className="auth-feedback" role="status" aria-live="polite">
-            {availability === "unavailable" ? (
-              <>
-                <p>Sign-in is temporarily unavailable.</p>
-                <button className="auth-retry" onClick={() => void checkAvailability()}>
-                  Try again
-                </button>
-              </>
-            ) : message ? (
-              <p>{message}</p>
-            ) : busy ? (
-              <p>Opening Google…</p>
-            ) : null}
-          </div>
-          <p className="auth-fine">New here? Your account is created when you sign in.</p>
-        </div>
-      </section>
-    </main>
+    <Center component="main" mih="100dvh" p="md">
+      <Container size="xs" w="100%" px={0}>
+        <Stack gap="xl">
+          <Group justify="center" gap="sm">
+            <ThemeIcon variant="filled" size="xl" color="yellow" radius="xl">
+              <Text component="span" size="xl" lh={1} aria-hidden="true">
+                🍿
+              </Text>
+            </ThemeIcon>
+            <Text fw={900} size="xl">
+              MovieFinder
+            </Text>
+          </Group>
+          <Paper withBorder p={{ base: "lg", xs: "xl" }} radius="lg" shadow="lg">
+            <Stack align="flex-start" gap="lg">
+              <Group justify="space-between" w="100%" h="4rem" aria-hidden="true">
+                <ThemeIcon variant="filled" color="yellow" radius="xl" size="xl">
+                  <Popcorn size={26} />
+                </ThemeIcon>
+                <ThemeIcon
+                  variant="gradient"
+                  gradient={{ from: "violet", to: "pink", deg: 45 }}
+                  radius="xl"
+                  size="xl"
+                >
+                  <Clapperboard size={24} />
+                </ThemeIcon>
+                <ThemeIcon variant="light" color="pink" radius="xl" size="xl">
+                  <Ticket size={24} />
+                </ThemeIcon>
+                <ThemeIcon variant="light" color="cyan" radius="xl" size="xl">
+                  <Film size={24} />
+                </ThemeIcon>
+              </Group>
+              <Divider w="100%" variant="dashed" color="violet.5" />
+              <Group justify="space-between" w="100%">
+                <Title order={1} id="auth-title">
+                  Sign in
+                </Title>
+              </Group>
+              <Text c="dimmed">
+                Sign in to search titles, track watched movies and TV shows, and manage lists.
+              </Text>
+              <Divider w="100%" variant="dashed" color="violet.5" />
+              <UnstyledButton
+                type="button"
+                aria-label="Sign in with Google"
+                disabled={availability !== "ready" || busy}
+                onClick={() => void signInWithGoogle()}
+              >
+                <Image src="/brand/google-signin-light.png" w={216} h={48} alt="" />
+              </UnstyledButton>
+              <ScrollArea h="10rem" w="100%">
+                <Stack role="status" aria-live="polite" gap="xs">
+                  {availability === "unavailable" ? (
+                    <>
+                      <Alert color="red">Sign-in is temporarily unavailable.</Alert>
+                      <Button variant="default" onClick={() => void checkAvailability()}>
+                        Try again
+                      </Button>
+                    </>
+                  ) : message ? (
+                    <Alert color="red">{message}</Alert>
+                  ) : busy ? (
+                    <Text c="dimmed">Opening Google…</Text>
+                  ) : availability === "checking" ? (
+                    <Text c="dimmed">Checking sign-in availability…</Text>
+                  ) : null}
+                </Stack>
+              </ScrollArea>
+              <Text size="sm" c="dimmed">
+                An account is created on your first sign-in.
+              </Text>
+            </Stack>
+          </Paper>
+        </Stack>
+      </Container>
+    </Center>
   );
 }

@@ -18,6 +18,7 @@ import { fixtureUpstream, movieDetail } from "../tests/fixtures/catalog";
 // Vite dev client, and a scripted browser session. Prints the telemetry summary afterwards.
 //   bun run perf [--titles 2000] [--seed 600] [--lists 12] [--throttle 4] [--headed] [--keep]
 //   bun run perf --drawer [--profile]   # focused add-to-list open/close reproduction
+//   bun run perf --layout-all         # affected element geometry throughout the full session
 const args = process.argv.slice(2);
 const option = (name: string, fallback: number) => {
   const i = args.indexOf(`--${name}`);
@@ -237,6 +238,50 @@ try {
   const page = await (
     await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   ).newPage();
+  if (args.includes("--layout") || args.includes("--layout-all")) {
+    await page.exposeFunction("__recordLayout", (sample: unknown) =>
+      console.log(`layout audit: ${JSON.stringify(sample)}`),
+    );
+    await page.addInitScript(() => {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const shift = entry as PerformanceEntry & {
+            value: number;
+            hadRecentInput: boolean;
+            sources: { node?: Node; previousRect: DOMRectReadOnly; currentRect: DOMRectReadOnly }[];
+          };
+          if (shift.hadRecentInput) continue;
+          const path = location.pathname;
+          void (
+            window as unknown as { __recordLayout(sample: unknown): Promise<void> }
+          ).__recordLayout({
+            path: path.startsWith("/title/")
+              ? "/title/:id"
+              : ["/", "/auth", "/search", "/lists", "/profile", "/activity"].includes(path)
+                ? path
+                : "/other",
+            value: shift.value,
+            sources: shift.sources.map((source) => {
+              const node =
+                source.node instanceof Element ? source.node : source.node?.parentElement;
+              return {
+                tag: node?.tagName,
+                classes: node
+                  ?.getAttribute("class")
+                  ?.split(" ")
+                  .filter((name) =>
+                    /^(?:mantine-|m_[a-z0-9]+|swiper-|detail-|title-|list-)/.test(name),
+                  )
+                  .join(" "),
+                previous: source.previousRect.toJSON(),
+                current: source.currentRect.toJSON(),
+              };
+            }),
+          });
+        }
+      }).observe({ type: "layout-shift" });
+    });
+  }
   activePage = page;
   page.on("crash", () => console.error("Performance browser renderer crashed"));
   page.on("pageerror", (error) => console.error(`Performance browser error: ${error.message}`));
@@ -268,9 +313,9 @@ try {
   const primaryNavigation = async () => {
     const times: string[] = [];
     for (const [label, path] of [
-      ["Collections", "/lists"],
-      ["Community", "/activity"],
-      ["Your profile", "/profile"],
+      ["Lists", "/lists"],
+      ["Activity", "/activity"],
+      ["Profile", "/profile"],
       ["Search", "/search"],
       ["Discover", "/"],
     ]) {
@@ -311,7 +356,15 @@ try {
     console.log(`  primary link press to destination paint opportunity: ${times.join(", ")}`);
   };
   await mark("primary navigation before browsing", primaryNavigation);
-  if (args.includes("--drawer")) {
+  if (args.includes("--layout")) {
+    await mark("cold search and progressive hydration", async () => {
+      await page.goto(`${origin}/search?q=Synthetic`);
+      await page
+        .getByRole("textbox", { name: "Search movies, series, people, and lists" })
+        .waitFor();
+      await page.waitForTimeout(8000);
+    });
+  } else if (args.includes("--drawer")) {
     page.on("dialog", async (dialog) => {
       console.error("Drawer opened a blocking native browser dialog");
       await dialog.dismiss();
@@ -342,7 +395,7 @@ try {
             .locator(".swiper-slide-active")
             .getByRole("button", { name: "Add to list" })
             .click();
-          const drawer = page.getByRole("dialog", { name: "Save for a good night" });
+          const drawer = page.getByRole("dialog", { name: "Add to list" });
           await drawer.waitFor({ timeout: 5000 });
           await drawer.getByRole("button", { name: "Create a list" }).waitFor({ timeout: 5000 });
           await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
@@ -417,7 +470,10 @@ try {
       await page.waitForFunction(() =>
         Boolean((window as unknown as { __navigationTiming?: unknown }).__navigationTiming),
       );
-      await page.getByRole("heading", { name: "A career in stories." }).waitFor({ timeout: 30000 });
+      await page.getByRole("heading", { name: "Filmography" }).waitFor({ timeout: 30000 });
+      // Section headings now reserve their space before hydration. Measure the
+      // actual graph, not the already-visible heading in the route preview.
+      await page.locator('.detail-page[data-content-ready="true"]').waitFor({ timeout: 30000 });
       return page.evaluate(() => {
         const value = (
           window as unknown as { __navigationTiming: { shell: number; started: number } }
@@ -510,7 +566,7 @@ try {
           )
           .catch(() => {});
       }
-      const tab = page.getByRole("button", { name: "Acting", exact: true });
+      const tab = page.getByRole("tab", { name: "Acting", exact: true });
       if (await tab.count()) {
         await tab.click();
         await page.waitForTimeout(1500);
@@ -566,7 +622,7 @@ try {
       );
       // Keep the accumulated client DB: reloads hid the cost of navigating a long session.
       await primaryNavigation();
-      await page.getByRole("link", { name: "Collections", exact: true }).first().click();
+      await page.getByRole("link", { name: "Lists", exact: true }).first().click();
       await page.locator(`a.list-card[href="/lists/${listIds[0]}"]`).click();
       await page.locator(".list-entry").first().waitFor();
     });

@@ -5,13 +5,40 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Pencil, ArrowUpRight, LogOut, Check, UserPlus, Bookmark } from "lucide-react";
 import { authClient, useEntities, send, report, encodeParams, stopSync } from "../state";
-import type { FeedParams } from "../../shared/contracts";
-import { PageHeading, Empty, TitleCard, ShowMore, usePaging } from "../components/common";
+import type { FeedParams, Entity } from "../../shared/contracts";
+import { DataSection } from "../components/data-section";
+import { useStableOrder } from "../stable-order";
+import {
+  ActivityCaption,
+  PageHeading,
+  Empty,
+  TitleCard,
+  ShowMore,
+  usePaging,
+} from "../components/common";
 import { useTitles, useUsers } from "../components/viewer";
 import { ListCard } from "./lists";
 import { Image } from "../components/image";
-import { Button } from "../components/ui/button";
-import { Sheet } from "../components/ui/dialog";
+import {
+  Anchor,
+  Avatar,
+  Box,
+  Button,
+  Divider,
+  Drawer,
+  Group,
+  Image as MantineImage,
+  NavLink,
+  Paper,
+  ScrollArea,
+  SimpleGrid,
+  Stack,
+  Tabs,
+  Text,
+  Textarea,
+  TextInput,
+  Title,
+} from "@mantine/core";
 export function ActivityPage({ userId }: { userId: string }) {
   const activities = useEntities("activity"),
     users = useUsers(),
@@ -27,101 +54,189 @@ export function ActivityPage({ userId }: { userId: string }) {
           fieldText(b.data.createdAt).localeCompare(fieldText(a.data.createdAt)),
         ),
       [activities],
-    );
+    ),
+    ordered = useStableOrder("activity", sorted);
   return (
-    <div className="standard-page activity-page">
-      <PageHeading eyebrow="A SHARED LOVE OF STORIES" title="In good company." />
-      {pending.length > 0 && (
-        <section className="invitation-section">
-          <h2>You’re on the list.</h2>
+    <Stack gap="lg">
+      <PageHeading title="Activity">
+        <Button variant="default" disabled={ordered.isCurrent} onClick={ordered.refresh}>
+          Show latest
+        </Button>
+      </PageHeading>
+      <DataSection title="Invitations" height="14rem">
+        <Stack>
+          {!pending.length && <Text c="dimmed">No pending invitations.</Text>}
           {pending.map((inv) => (
-            <div className="invitation" key={inv.id}>
-              <UserPlus />
-              <div>
-                <strong>
-                  {users.get(fieldText(inv.data.invitedBy))?.title ?? "A friend"} invited you to
+            <Paper withBorder p="md" className="invitation" key={inv.id}>
+              <Stack>
+                <Text h="3.1em" lineClamp={2}>
+                  {users.get(fieldText(inv.data.invitedBy))?.title ?? "A member"} invited you to
                   collaborate
-                </strong>
-                <p>{listsById.get(fieldText(inv.data.listId))?.title ?? "A shared collection"}</p>
-              </div>
-              <Button
-                size="small"
-                onClick={() =>
-                  void send({ type: "invitation.accept", invitationId: inv.id }, userId).catch(
-                    report,
-                  )
-                }
-              >
-                Accept
-              </Button>
-              <Button
-                size="small"
-                variant="ghost"
-                onClick={() =>
-                  void send({ type: "invitation.decline", invitationId: inv.id }, userId).catch(
-                    report,
-                  )
-                }
-              >
-                Decline
-              </Button>
-            </div>
+                </Text>
+                <Text fw={500} h="3.1em" lineClamp={2}>
+                  {listsById.get(fieldText(inv.data.listId))?.title ?? "Shared list"}
+                </Text>
+                <Group>
+                  <Button
+                    onClick={() =>
+                      void send({ type: "invitation.accept", invitationId: inv.id }, userId).catch(
+                        report,
+                      )
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    variant="default"
+                    onClick={() =>
+                      void send({ type: "invitation.decline", invitationId: inv.id }, userId).catch(
+                        report,
+                      )
+                    }
+                  >
+                    Decline
+                  </Button>
+                </Group>
+              </Stack>
+            </Paper>
           ))}
-        </section>
-      )}
-      {activities.length ? (
-        <div className="activity-feed">
-          {sorted.slice(0, paging.shown).map((a) => {
-            const u = users.get(fieldText(a.data.userId)),
-              targetId = fieldText(a.data.targetId),
-              target = titles.get(targetId) ?? listsById.get(targetId);
-            return (
-              <article key={a.id}>
-                <Link
-                  to="/profile/$userId"
-                  params={{ userId: fieldText(a.data.userId) }}
-                  className="avatar"
-                >
-                  {u?.title[0] ?? "?"}
-                </Link>
-                <div>
-                  <p>
-                    <Link to="/profile/$userId" params={{ userId: fieldText(a.data.userId) }}>
-                      <strong>{u?.title ?? "A movie lover"}</strong>
-                    </Link>{" "}
-                    {a.title}
-                  </p>
-                  {target && (
-                    <Link
-                      to={target.kind === "list" ? "/lists/$listId" : "/title/$id"}
-                      params={target.kind === "list" ? { listId: targetId } : { id: targetId }}
-                      className="activity-target"
-                    >
-                      {target.title}
-                      <ArrowUpRight size={14} />
-                    </Link>
-                  )}
-                  <small>
-                    {new Date(fieldText(a.data.createdAt)).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
-                  </small>
-                </div>
-              </article>
-            );
-          })}
-          <ShowMore total={sorted.length} paging={paging} />
-        </div>
-      ) : (
-        <Empty title="The conversation starts with you.">
-          Share a take, start a collection, or invite a friend. Your community’s stories will show
-          up here.
-        </Empty>
-      )}
-    </div>
+        </Stack>
+      </DataSection>
+      <DataSection title="Recent activity" height="32rem">
+        {activities.length ? (
+          <Stack component="section" gap="md">
+            {ordered.rows.slice(0, paging.shown).map((a) => {
+              const u = users.get(fieldText(a.data.userId)),
+                targetId = fieldText(a.data.targetId),
+                target = titles.get(targetId) ?? listsById.get(targetId);
+              return (
+                <Group component="article" key={a.id} wrap="nowrap" align="flex-start">
+                  <Avatar
+                    renderRoot={(props) => (
+                      <Link
+                        {...props}
+                        to="/profile/$userId"
+                        params={{ userId: fieldText(a.data.userId) }}
+                      />
+                    )}
+                    aria-label={u?.title ?? "Member profile"}
+                  >
+                    {u?.title[0] ?? "?"}
+                  </Avatar>
+                  <Stack gap="xs" flex={1} miw={0}>
+                    <ActivityCaption
+                      actorId={fieldText(a.data.userId)}
+                      actorName={u?.title ?? "Member"}
+                      action={a.title}
+                    />
+                    <Box h="1.55rem">
+                      {target && (
+                        <Anchor
+                          className="activity-target"
+                          lineClamp={1}
+                          renderRoot={(props) => (
+                            <Link
+                              {...props}
+                              to={target.kind === "list" ? "/lists/$listId" : "/title/$id"}
+                              params={
+                                target.kind === "list" ? { listId: targetId } : { id: targetId }
+                              }
+                            />
+                          )}
+                        >
+                          {target.title}
+                        </Anchor>
+                      )}
+                    </Box>
+                    <Text size="xs" c="dimmed">
+                      {new Date(fieldText(a.data.createdAt)).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </Text>
+                  </Stack>
+                </Group>
+              );
+            })}
+            <ShowMore total={sorted.length} paging={paging} />
+          </Stack>
+        ) : (
+          <Empty title="No activity yet">
+            Title updates and list changes from members you follow will appear here.
+          </Empty>
+        )}
+      </DataSection>
+    </Stack>
+  );
+}
+export function ProfileHeader({
+  user,
+  own,
+  followed = false,
+  onEdit,
+  onFollow,
+}: {
+  user?: Entity;
+  own: boolean;
+  followed?: boolean;
+  onEdit?: () => void;
+  onFollow?: () => void;
+}) {
+  return (
+    <Paper component="header" withBorder p="lg" bg="dark.8">
+      <Group align="flex-start" justify="space-between">
+        <Group
+          align="flex-start"
+          wrap="nowrap"
+          w={{ base: "100%", sm: "calc(100% - 14rem)" }}
+          miw={0}
+        >
+          <Avatar size="xl">
+            <Image
+              images={user?.poster ? [{ path: user.poster, role: "poster" }] : []}
+              slot="avatar"
+              alt={user?.title ?? "Profile"}
+              fallback={user?.title[0] ?? "U"}
+            />
+          </Avatar>
+          <Stack gap="xs" flex={1} miw={0}>
+            <Title order={1} h="2.5em" lineClamp={2}>
+              {user?.title ?? "Profile"}
+            </Title>
+            <Text c="dimmed" h="1.55em" truncate>
+              @{fieldText(user?.data.username ?? "member")}
+            </Text>
+            <ScrollArea h="4.65rem">
+              <Text>{fieldText(user?.data.bio ?? "")}</Text>
+            </ScrollArea>
+          </Stack>
+        </Group>
+        {own ? (
+          <Button
+            variant="default"
+            disabled={!user || !onEdit}
+            w="12rem"
+            leftSection={<Pencil size={16} />}
+            onClick={onEdit}
+          >
+            Edit profile
+          </Button>
+        ) : (
+          <Button
+            variant={followed ? "default" : "filled"}
+            w="12rem"
+            justify="flex-start"
+            leftSection={followed ? <Check size={16} /> : <UserPlus size={16} />}
+            disabled={!user || !onFollow}
+            onClick={onFollow}
+          >
+            {followed ? "Following" : "Follow"}
+          </Button>
+        )}
+      </Group>
+    </Paper>
   );
 }
 export function ProfilePage({ currentUserId }: { currentUserId: string }) {
@@ -134,6 +249,7 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
     byId = useTitles(),
     feeds = useEntities("feed"),
     follows = useEntities("follow"),
+    [saving, setSaving] = useState(false),
     [edit, setEdit] = useState(false),
     [tab, setTab] = useState("liked");
   const user = users.get(userId),
@@ -158,212 +274,216 @@ export function ProfilePage({ currentUserId }: { currentUserId: string }) {
     });
     return () => controller.abort();
   }, [userId]);
+  const savedFeeds = feeds.filter((f) => f.data.userId === userId);
   return (
-    <div className="standard-page profile-page">
-      <header className="profile-header">
-        <div className="profile-avatar">
-          <Image
-            images={user?.poster ? [{ path: user.poster, role: "poster" }] : []}
-            slot="avatar"
-            fallback={user?.title[0] ?? "M"}
-          />
-        </div>
-        <div>
-          <span className="eyebrow">A LIFE IN GOOD STORIES</span>
-          <h1>{user?.title ?? "Movie lover"}</h1>
-          <p>@{fieldText(user?.data.username ?? "movie-lover")}</p>
-          <p>{fieldText(user?.data.bio ?? "Your taste tells a story.")}</p>
-        </div>
-        {own ? (
-          <Button variant="outline" disabled={!user} onClick={() => setEdit(true)}>
-            <Pencil size={15} />
-            Edit profile
-          </Button>
-        ) : (
-          <Button
-            variant={followed ? "outline" : "default"}
-            onClick={() =>
-              void send({ type: "user.follow", userId, follow: !followed }, currentUserId).catch(
-                report,
-              )
-            }
-          >
-            {followed ? <Check size={15} /> : <UserPlus size={15} />}{" "}
-            {followed ? "Following" : "Follow"}
-          </Button>
-        )}
-      </header>
-      <div className="profile-stats">
-        <div>
-          <strong>{tags.filter((s) => s.data.seen).length}</strong>
-          <span>Stories seen</span>
-        </div>
-        <div>
-          <strong>{tags.filter((s) => s.data.sentiment === "liked").length}</strong>
-          <span>All-time loves</span>
-        </div>
-        <div>
-          <strong>{ownedLists.length}</strong>
-          <span>Collections</span>
-        </div>
-      </div>
-      <div className="section-tabs">
+    <Stack gap="lg">
+      <ProfileHeader
+        user={user}
+        own={own}
+        followed={followed}
+        onEdit={() => setEdit(true)}
+        onFollow={() =>
+          void send({ type: "user.follow", userId, follow: !followed }, currentUserId).catch(report)
+        }
+      />
+      <SimpleGrid cols={3} maw="24rem">
         {[
-          ["liked", "Loved it"],
-          ["seen", "Seen it"],
-          ["meh", "It was okay"],
-          ["disliked", "Not for me"],
-          ["lists", "Collections"],
-          ...(own ? [["feeds", "Saved feeds"]] : []),
-        ].map(([key, label]) => (
-          <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key!)}>
-            {label}
-          </button>
+          [tags.filter((s) => s.data.seen).length, "Seen"],
+          [tags.filter((s) => s.data.sentiment === "liked").length, "Liked"],
+          [ownedLists.length, "Lists"],
+        ].map(([count, label]) => (
+          <Stack gap={0} key={label}>
+            <Text fw={600} size="xl">
+              {count}
+            </Text>
+            <Text size="sm" c="dimmed">
+              {label}
+            </Text>
+          </Stack>
         ))}
-      </div>
-      {tab === "lists" ? (
-        ownedLists.length ? (
-          <div className="list-grid">
-            {ownedLists.map((l) => (
-              <ListCard key={l.id} list={l} />
-            ))}
-          </div>
-        ) : (
-          <Empty title="A collection of possibilities.">New lists will appear here.</Empty>
-        )
-      ) : tab === "feeds" ? (
-        <div className="social-results">
-          {feeds
-            .filter((f) => f.data.userId === userId)
-            .map((f) => (
-              <Link key={f.id} to="/" search={encodeParams(f.data.params as FeedParams)}>
-                <Bookmark />
-                <strong>{f.title}</strong>
-                <ArrowUpRight />
-              </Link>
-            ))}
-          {!feeds.length && (
-            <Empty title="Find your kind of feed.">
-              Save a set of filters from Discover and come back to it anytime.
-            </Empty>
-          )}
-        </div>
-      ) : titles.length ? (
-        <div className="title-grid">
-          {titles.slice(0, paging.shown).map((e) => (
-            <TitleCard key={e.id} entity={e} />
+      </SimpleGrid>
+      <Tabs value={tab} onChange={(value) => setTab(value ?? "liked")}>
+        <Tabs.List>
+          {[
+            ["liked", "Liked"],
+            ["seen", "Seen"],
+            ["meh", "Meh"],
+            ["disliked", "Disliked"],
+            ["lists", "Lists"],
+            ...(own ? [["feeds", "Saved feeds"]] : []),
+          ].map(([value, label]) => (
+            <Tabs.Tab key={value} value={value!}>
+              {label}
+            </Tabs.Tab>
           ))}
-        </div>
-      ) : (
-        <Empty title="Good taste takes a little exploring.">
-          A few taps in Discover and this space starts telling your story.
-        </Empty>
-      )}
-      <ShowMore total={titles.length} paging={paging} />
+        </Tabs.List>
+        {["liked", "seen", "meh", "disliked", "lists", ...(own ? ["feeds"] : [])]
+          .filter((value) => value !== tab)
+          .map((value) => (
+            <Tabs.Panel key={value} value={value}>
+              {null}
+            </Tabs.Panel>
+          ))}
+        <Tabs.Panel value={tab} pt="lg">
+          <ScrollArea h="32rem">
+            <Stack>
+              {tab === "lists" ? (
+                ownedLists.length ? (
+                  <SimpleGrid cols={{ base: 1, xs: 2, lg: 3 }}>
+                    {ownedLists.map((l) => (
+                      <ListCard key={l.id} list={l} />
+                    ))}
+                  </SimpleGrid>
+                ) : (
+                  <Empty title="No lists yet">Public lists will appear here.</Empty>
+                )
+              ) : tab === "feeds" ? (
+                savedFeeds.length ? (
+                  <Stack>
+                    {savedFeeds.map((f) => (
+                      <NavLink
+                        key={f.id}
+                        renderRoot={(props) => (
+                          <Link
+                            {...props}
+                            to="/"
+                            search={encodeParams(f.data.params as FeedParams)}
+                          />
+                        )}
+                        label={f.title}
+                        leftSection={<Bookmark size={18} />}
+                        rightSection={<ArrowUpRight size={18} />}
+                      />
+                    ))}
+                  </Stack>
+                ) : (
+                  <Empty title="No saved feeds">
+                    Save a set of filters from Discover to return to it later.
+                  </Empty>
+                )
+              ) : titles.length ? (
+                <SimpleGrid cols={{ base: 2, xs: 3, md: 4, lg: 5 }}>
+                  {titles.slice(0, paging.shown).map((e) => (
+                    <TitleCard key={e.id} entity={e} />
+                  ))}
+                </SimpleGrid>
+              ) : (
+                <Empty title="No titles yet">Titles marked in Discover will appear here.</Empty>
+              )}
+              {!["lists", "feeds"].includes(tab) && (
+                <ShowMore total={titles.length} paging={paging} />
+              )}
+            </Stack>
+          </ScrollArea>
+        </Tabs.Panel>
+      </Tabs>
       {nextPage && (
         <Button
-          variant="outline"
+          variant="default"
           onClick={() => void loadSocial("profile", userId, nextPage).catch(report)}
         >
-          More stories
+          Load more
         </Button>
       )}
       {own && (
-        <Button
-          className="logout"
-          variant="ghost"
-          onClick={() =>
-            void authClient
-              .signOut()
-              .then(() => {
-                stopSync();
-                location.assign("/auth");
-              })
-              .catch(report)
-          }
-        >
-          <LogOut size={16} />
-          Sign out
-        </Button>
+        <Group>
+          <Button
+            variant="subtle"
+            leftSection={<LogOut size={16} />}
+            onClick={() =>
+              void authClient
+                .signOut()
+                .then(() => {
+                  stopSync();
+                  location.assign("/auth");
+                })
+                .catch(report)
+            }
+          >
+            Sign out
+          </Button>
+        </Group>
       )}
-      <section className="about-credits">
-        <h2>For the love of a good story.</h2>
-        <p>MovieFinder is a place to discover, collect, and share the stories you love.</p>
-        <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer">
-          <img
-            src="/tmdb-logo.svg"
-            alt="The Movie Database"
-            width="65"
-            height="47"
-            loading="lazy"
-          />
-        </a>
-        <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-        <p>Streaming availability is provided by JustWatch through TMDB.</p>
-      </section>
-      <Sheet
-        open={edit}
-        onOpenChange={setEdit}
-        title="Make yourself at home."
-        description="Your profile is public to other MovieFinder members."
-      >
-        <form
-          className="sheet-body"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const d = new FormData(e.currentTarget);
+      <Divider />
+      <Stack component="section" gap="sm">
+        <Title order={2}>Data sources</Title>
+        <Anchor
+          href="https://www.themoviedb.org"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="The Movie Database"
+        >
+          <MantineImage src="/tmdb-logo.svg" alt="The Movie Database" w={65} h={47} fit="contain" />
+        </Anchor>
+        <Text size="sm" c="dimmed">
+          This product uses the TMDB API but is not endorsed or certified by TMDB.
+        </Text>
+        <Text size="sm" c="dimmed">
+          Streaming availability is provided by JustWatch through TMDB.
+        </Text>
+      </Stack>
+      <Drawer opened={edit} onClose={() => setEdit(false)} title="Edit profile">
+        <Box
+          component="form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (saving) return;
+            const data = new FormData(event.currentTarget);
+            setSaving(true);
             void send(
               {
                 type: "profile",
-                name: fieldText(d.get("name")),
-                username: fieldText(d.get("username")),
-                bio: fieldText(d.get("bio")),
-                image: fieldText(d.get("image")),
+                name: fieldText(data.get("name")),
+                username: fieldText(data.get("username")),
+                bio: fieldText(data.get("bio")),
+                image: fieldText(data.get("image")),
               },
               currentUserId,
             )
               .then(() => setEdit(false))
-              .catch(report);
+              .catch(report)
+              .finally(() => setSaving(false));
           }}
         >
-          <label>
-            Display name
-            <input name="name" required maxLength={100} defaultValue={user?.title} />
-          </label>
-          <label>
-            Username
-            <input
+          <Stack>
+            <Text size="sm" c="dimmed">
+              Your profile is public to MovieFinder members.
+            </Text>
+            <TextInput
+              name="name"
+              label="Display name"
+              required
+              maxLength={100}
+              defaultValue={user?.title}
+            />
+            <TextInput
               name="username"
+              label="Username"
+              description="3–30 letters, numbers, or underscores"
               required
               pattern="[a-zA-Z0-9_]{3,30}"
               defaultValue={fieldText(user?.data.username ?? "")}
             />
-          </label>
-          <label>
-            About you
-            <textarea
+            <Textarea
               name="bio"
+              label="About you"
               rows={3}
               maxLength={500}
               defaultValue={fieldText(user?.data.bio ?? "")}
-              placeholder="Your favorite genre. Your most controversial take."
             />
-          </label>
-          <label>
-            Avatar URL
-            <input
+            <TextInput
               name="image"
+              label="Avatar URL"
               type="url"
-              placeholder="https://…"
+              placeholder="https://"
               defaultValue={fieldText(user?.data.image ?? "")}
             />
-          </label>
-          <Button type="submit">
-            Save profile
-            <Check size={17} />
-          </Button>
-        </form>
-      </Sheet>
-    </div>
+            <Button type="submit" disabled={saving}>
+              Save profile
+            </Button>
+          </Stack>
+        </Box>
+      </Drawer>
+    </Stack>
   );
 }

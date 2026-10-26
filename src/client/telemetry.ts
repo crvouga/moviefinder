@@ -313,8 +313,7 @@ export function installTelemetry() {
   );
   observe("layout-shift", (entry) => {
     const shift = entry as PerformanceEntry & { value: number; hadRecentInput: boolean };
-    if (!shift.hadRecentInput && shift.value > 0)
-      track("layout", "shift", { value: round(shift.value * 1000) / 1000 });
+    if (!shift.hadRecentInput && shift.value > 0) track("layout", "shift", { value: shift.value });
   });
   const instrumented = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input), location.origin);

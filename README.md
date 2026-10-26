@@ -1,6 +1,6 @@
 # MovieFinder
 
-A mobile-first home for finding films and TV, recording your taste, and making public collections with friends. Discovery uses a virtualized vertical Swiper feed, independent seen/sentiment controls, composable filters, and progressive catalog updates. The interface has no loading spinners.
+A React and Mantine app for searching movies and TV shows, tracking watched titles and sentiment, and managing public lists. Discovery uses a virtualized vertical Swiper feed, independent seen/sentiment controls, composable filters, and progressive catalog updates. The interface has no loading spinners.
 
 ## Run locally
 
@@ -60,6 +60,11 @@ If an older run reported missing `moviefinder.user` or allocation errors, stop i
 | `vault run -- bun scripts/smoke.ts` | Explicit live TMDB smoke check; no database writes                                   |
 
 The test scripts refuse non-loopback test URLs or database names that do not end in `_test`. Fixture upstream responses are used only by tests. Production has no mock catalog or authentication bypass.
+
+## UI
+
+All routes use a shared Mantine theme, provider and responsive AppShell. Read
+[UI conventions](docs/ui.md) before changing browser code.
 
 ## Architecture
 

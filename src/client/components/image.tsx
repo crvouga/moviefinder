@@ -1,3 +1,4 @@
+import { Image as MantineImage } from "@mantine/core";
 import { currentNavigationContext, track } from "../telemetry";
 import { useMemo, useState, type ReactNode } from "react";
 import { resolveImage, imageUnavailable, type ImageSource, type SlotName } from "../images";
@@ -26,7 +27,11 @@ export function Image({
   );
   if (!resolved || failed === resolved.src || imageUnavailable(resolved)) return fallback;
   return (
-    <img
+    <MantineImage
+      h="100%"
+      w="100%"
+      fit="cover"
+      radius="md"
       className={className}
       src={resolved.src}
       srcSet={resolved.srcSet}

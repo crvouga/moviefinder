@@ -19,6 +19,21 @@ Preserve commit ordering of durable events and atomicity with mutations. Keep li
 
 Secrets must never appear in source, output, images, artifacts, test evidence, or documentation. .vault.yaml contains only coordinates. Runtime configuration is environment-based. Production runs one Bun server and accepts only its explicitly configured origins, with independent host-only authentication cookies and exact registered callbacks.
 
+## UI changes
+
+Read [docs/ui.md](docs/ui.md) before UI work. React and Mantine are the only UI
+system. Use the central theme/provider and established shell, page headers, forms
+and states. Search official Mantine documentation before unfamiliar interactions;
+compose Mantine components before adding abstractions. Use existing defaults and
+tokens; do not invent sizes, colors, radii, primitives or styling dependencies.
+Custom CSS requires a documented Mantine limitation in docs/ui.md and a narrow
+architecture-check exception. Preserve accessibility, responsive behavior,
+nonspinning feedback, route contracts and canonical entity state. Keep product
+copy neutral and concise. Run check/build and relevant browser/integration checks.
+Reserve loading/data/empty/error geometry, keep viewport and Mantine scrollbar
+gutters permanent, and keep existing rows and controls anchored as data arrives.
+Run the layout-stability browser suite; never round or tolerate away microshifts.
+
 ## PR attestations
 
 Handle PR attestations autonomously. Inspect the diff and gather available evidence. Update only truthful claims. If evidence, access, or sign-off is unavailable, leave the claim unchecked, document the precise blocker, and continue independent work. Never fabricate evidence or bypass a gate, and never ask the user to provide evidence solely to clear an attestation gate.

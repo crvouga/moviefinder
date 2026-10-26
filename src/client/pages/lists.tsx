@@ -2,7 +2,7 @@ import { bindNavigation } from "../telemetry";
 import { feedParams } from "../../shared/contracts";
 import { fieldText } from "../../shared/contracts";
 import { memo, useEffect, useRef, useState } from "react";
-import { Link, useParams, useRouter } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import {
   Plus,
   ArrowUpRight,
@@ -22,43 +22,70 @@ import {
 } from "lucide-react";
 import type { Entity } from "../../shared/contracts";
 import { useEntities, send, report, notify, discover, subscribeQuery, loadSocial } from "../state";
-import { Poster, PageHeading, Empty } from "../components/common";
+import { ActivityCaption, Poster, PageHeading, Empty } from "../components/common";
 import { useListItems, useTitles, useUsers, useViewerStatuses } from "../components/viewer";
-import { Button } from "../components/ui/button";
-import { Sheet } from "../components/ui/dialog";
+import {
+  ActionIcon,
+  AspectRatio,
+  ScrollArea,
+  Anchor,
+  Avatar,
+  Badge,
+  Box,
+  Button,
+  Card,
+  Divider,
+  Drawer,
+  Grid,
+  Group,
+  NavLink,
+  Paper,
+  SimpleGrid,
+  Stack,
+  Tabs,
+  Text,
+  Textarea,
+  TextInput,
+  Title,
+} from "@mantine/core";
 export const ListCard = memo(function ListCard({ list }: { list: Entity }) {
   const entries = useListItems(list.id),
     byId = useTitles(),
     owner = useUsers().get(fieldText(list.data.ownerId));
   return (
-    <Link to="/lists/$listId" params={{ listId: list.id }} className="list-card">
-      <div className="list-art">
-        {entries.length ? (
-          entries
-            .slice(0, 3)
-            .map((entry, i) => (
-              <Poster
-                key={entry.id}
-                entity={byId.get(fieldText(entry.data.titleId))}
-                slot="thumb"
-                className={`list-cover list-cover-${i}`}
-              />
-            ))
-        ) : (
-          <>
-            <Bookmark size={44} />
-            <span>A good story starts with a list.</span>
-          </>
-        )}
-        <span className="list-open">
-          <ArrowUpRight size={20} />
-        </span>
-      </div>
-      <h3>{list.title}</h3>
-      <p>
-        {entries.length} titles <span>·</span> by {owner?.title ?? "a movie lover"}
-      </p>
-    </Link>
+    <Card
+      renderRoot={(props) => <Link {...props} to="/lists/$listId" params={{ listId: list.id }} />}
+
+      className="list-card"
+      c="inherit"
+    >
+      <Stack gap="sm">
+        <AspectRatio ratio={2}>
+          {entries.length ? (
+            <SimpleGrid cols={3} spacing="xs">
+              {entries.slice(0, 3).map((entry) => (
+                <Poster
+                  key={entry.id}
+                  entity={byId.get(fieldText(entry.data.titleId))}
+                  slot="thumb"
+                />
+              ))}
+            </SimpleGrid>
+          ) : (
+            <Group mih="8rem" justify="center">
+              <Bookmark size={24} />
+              <Text c="dimmed">No titles</Text>
+            </Group>
+          )}
+        </AspectRatio>
+        <Title order={3} ff="var(--mantine-font-family)" h="2.8em" lineClamp={2}>
+          {list.title}
+        </Title>
+        <Text size="sm" c="dimmed" h="1.55em" lineClamp={1}>
+          {entries.length} titles · {owner?.title ?? "Unknown owner"}
+        </Text>
+      </Stack>
+    </Card>
   );
 });
 export function ListsPage({ userId }: { userId: string }) {
@@ -88,53 +115,71 @@ export function ListsPage({ userId }: { userId: string }) {
       (tab === "saved" && follows.some((f) => f.data.targetId === l.id)),
   );
   return (
-    <div className="standard-page">
-      <PageHeading eyebrow="GOOD TASTE IS BETTER SHARED" title="A list for every kind of night.">
-        <Button onClick={() => setCreate(true)}>
-          <Plus size={17} />
+    <Stack gap="lg">
+      <PageHeading title="Lists">
+        <Button leftSection={<Plus size={17} />} onClick={() => setCreate(true)}>
           New list
         </Button>
       </PageHeading>
-      <div className="section-tabs">
-        {[
-          ["yours", "Your collections"],
-          ["saved", "Saved lists"],
-          ["explore", "Explore lists"],
-        ].map(([key, label]) => (
-          <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key!)}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {visible.length ? (
-        <div className="list-grid">
-          {visible.map((l) => (
-            <ListCard key={l.id} list={l} />
+      <Tabs value={tab} onChange={(value) => setTab(value ?? "yours")}>
+        <Tabs.List>
+          {[
+            ["yours", "Your lists"],
+            ["saved", "Saved lists"],
+            ["explore", "Explore lists"],
+          ].map(([value, label]) => (
+            <Tabs.Tab key={value} value={value!}>
+              {label}
+            </Tabs.Tab>
           ))}
-        </div>
-      ) : (
-        <Empty
-          title={
-            tab === "saved"
-              ? "Borrow a little good taste."
-              : "Every great movie night starts somewhere."
-          }
-        >
-          {tab === "saved"
-            ? "Explore public lists and save the ones that speak to you."
-            : "Keep your favorites close, build a watchlist, or invite a friend to help pick the next one."}
-        </Empty>
-      )}
-      {nextPage && (
-        <Button
-          variant="outline"
-          onClick={() => void loadSocial("lists", tab, nextPage).catch(report)}
-        >
-          More collections
-        </Button>
-      )}
+        </Tabs.List>
+        {["yours", "saved", "explore"]
+          .filter((value) => value !== tab)
+          .map((value) => (
+            <Tabs.Panel key={value} value={value}>
+              {null}
+            </Tabs.Panel>
+          ))}
+        <Tabs.Panel value={tab} pt="lg">
+          <ScrollArea h="32rem">
+            <Stack>
+              {visible.length ? (
+                <SimpleGrid cols={{ base: 1, xs: 2, lg: 3 }}>
+                  {visible.map((l) => (
+                    <ListCard key={l.id} list={l} />
+                  ))}
+                </SimpleGrid>
+              ) : (
+                <Empty
+                  title={
+                    tab === "saved"
+                      ? "No saved lists"
+                      : tab === "explore"
+                        ? "No lists available"
+                        : "No lists yet"
+                  }
+                >
+                  {tab === "saved"
+                    ? "Save public lists to find them here."
+                    : tab === "explore"
+                      ? "Public lists will appear here."
+                      : "Create a list to organize movies and TV shows."}
+                </Empty>
+              )}
+              {nextPage && (
+                <Button
+                  variant="default"
+                  onClick={() => void loadSocial("lists", tab, nextPage).catch(report)}
+                >
+                  Load more lists
+                </Button>
+              )}
+            </Stack>
+          </ScrollArea>
+        </Tabs.Panel>
+      </Tabs>
       <ListEditor open={create} setOpen={setCreate} userId={userId} />
-    </div>
+    </Stack>
   );
 }
 function ListEditor({
@@ -148,21 +193,20 @@ function ListEditor({
   userId: string;
   list?: Entity;
 }) {
+  const [saving, setSaving] = useState(false);
   return (
-    <Sheet
-      open={open}
-      onOpenChange={setOpen}
-      title={list ? "A little fine-tuning." : "Give your next movie night a name."}
-      description="All lists are public to the MovieFinder community."
-    >
-      <form
+    <Drawer opened={open} onClose={() => setOpen(false)} title={list ? "Edit list" : "New list"}>
+      <Box
+        component="form"
         key={list?.id ?? "new"}
-        className="sheet-body"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const d = new FormData(e.currentTarget),
-            title = fieldText(d.get("title")),
-            description = fieldText(d.get("description"));
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (saving) return;
+          const data = new FormData(event.currentTarget),
+            title = fieldText(data.get("title")).trim(),
+            description = fieldText(data.get("description"));
+          if (!title) return;
+          setSaving(true);
           void send(
             list
               ? { type: "list.edit", listId: list.id, title, description }
@@ -171,42 +215,41 @@ function ListEditor({
           )
             .then(() => {
               setOpen(false);
-              notify(list ? "List updated." : "A new collection, a world of possibilities.");
+              notify(list ? "List updated." : "List created.");
             })
-            .catch(report);
+            .catch(report)
+            .finally(() => setSaving(false));
         }}
       >
-        <label>
-          List name
-          <input
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Lists are public to MovieFinder members.
+          </Text>
+          <TextInput
             name="title"
+            label="List name"
             required
             maxLength={120}
             defaultValue={list?.title}
-            placeholder="Films that feel like a Sunday"
+            data-autofocus
           />
-        </label>
-        <label>
-          A few words
-          <textarea
+          <Textarea
             name="description"
+            label="Description"
             rows={4}
             maxLength={2000}
             defaultValue={fieldText(list?.data.description ?? "")}
-            placeholder="Set the mood. Tell us what belongs here."
           />
-        </label>
-        <Button type="submit">
-          {list ? "Save changes" : "Create your list"}
-          <ArrowUpRight size={17} />
-        </Button>
-      </form>
-    </Sheet>
+          <Button type="submit" disabled={saving}>
+            {list ? "Save changes" : "Create list"}
+          </Button>
+        </Stack>
+      </Box>
+    </Drawer>
   );
 }
 export function ListDetail({ userId }: { userId: string }) {
   const { listId } = useParams({ strict: false }) as { listId: string },
-    router = useRouter(),
     lists = useEntities("list"),
     entries = useListItems(listId),
     statuses = useViewerStatuses(),
@@ -246,275 +289,358 @@ export function ListDetail({ userId }: { userId: string }) {
     ),
     collaborators = members.filter((m) => m.data.listId === listId),
     saved = follows.some((f) => f.data.targetId === listId);
-  if (!list)
-    return (
-      <div className="standard-page">
-        <Empty title="This list hasn’t arrived yet.">
-          It may have been removed, or your connection is catching up.
-        </Empty>
-        <Link to="/lists">Explore other lists</Link>
-      </div>
-    );
   const move = (itemId: string, beforeId: string | null) =>
     void send({ type: "list.move", listId, itemId, beforeId }, userId).catch(report);
   return (
-    <div className="standard-page list-detail">
-      <Button variant="ghost" onClick={() => router.history.back()}>
-        <ArrowLeft size={16} />
-        Back to collections
-      </Button>
-      <header className="list-detail-heading">
-        <span className="eyebrow">A LITTLE COLLECTION OF GOOD STORIES</span>
-        <h1>{list.title}</h1>
-        <p>{fieldText(list.data.description) || "Good taste, collected."}</p>
-        <div className="list-metadata">
-          <span>{entries.length} titles</span>
-          <span>Public collection</span>
-          <span className="live-pill">
-            <i />
-            Live collaboration
-          </span>
-        </div>
-        <div className="list-actions">
+    <Stack gap="lg">
+      <Anchor renderRoot={(props) => <Link {...props} to="/lists" />}>
+        <Group gap="xs">
+          <ArrowLeft size={16} />
+          Back to lists
+        </Group>
+      </Anchor>
+      <PageHeading title={list?.title ?? "List"} />
+      <ScrollArea h="4.65rem">
+        <Text>{fieldText(list?.data.description)}</Text>
+      </ScrollArea>
+      <Group gap="sm">
+        <Badge variant="light" w="6rem">
+          <Group component="span" gap={0} wrap="nowrap">
+            <Text component="span" inherit ff="monospace" w="5ch" ta="left">
+              {entries.length}
+            </Text>
+            <Text component="span" inherit>
+              titles
+            </Text>
+          </Group>
+        </Badge>
+        <Text size="sm" c="dimmed">
+          Public list · Changes sync automatically
+        </Text>
+      </Group>
+      <ScrollArea h="8rem">
+        <Group gap="sm">
+          <Button
+            variant="default"
+            disabled={!list}
+            w="9rem"
+            justify="flex-start"
+            leftSection={saved ? <Check size={16} /> : <Bookmark size={16} />}
+            onClick={() =>
+              void send({ type: "list.follow", listId, follow: !saved }, userId).catch(report)
+            }
+          >
+            {saved ? "Saved" : "Save list"}
+          </Button>
+          <Button
+            variant="subtle"
+            leftSection={<Copy size={16} />}
+            disabled={!list}
+            onClick={() =>
+              void send({ type: "list.copy", listId }, userId)
+                .then(() => notify("List copied."))
+                .catch(report)
+            }
+          >
+            Make a copy
+          </Button>
           {editable && (
-            <Button onClick={() => setAdd(true)}>
-              <Plus size={16} />
+            <Button leftSection={<Plus size={16} />} onClick={() => setAdd(true)}>
               Add titles
             </Button>
           )}
           {owner && (
             <>
-              <Button variant="outline" onClick={() => setEdit(true)}>
-                <Pencil size={15} />
+              <Button
+                variant="default"
+                leftSection={<Pencil size={16} />}
+                onClick={() => setEdit(true)}
+              >
                 Edit
               </Button>
-              <Button variant="outline" onClick={() => setInvite(true)}>
-                <UserPlus size={15} />
-                Invite friends
+              <Button
+                variant="default"
+                leftSection={<UserPlus size={16} />}
+                onClick={() => setInvite(true)}
+              >
+                Invite members
               </Button>
             </>
           )}
-          <Button
-            variant="outline"
-            onClick={() =>
-              void send({ type: "list.follow", listId, follow: !saved }, userId).catch(report)
-            }
-          >
-            {saved ? <Check size={16} /> : <Bookmark size={16} />} {saved ? "Saved" : "Save list"}
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() =>
-              void send({ type: "list.copy", listId }, userId)
-                .then(() => notify("A copy is waiting in your collections."))
-                .catch(report)
-            }
-          >
-            <Copy size={16} />
-            Make a copy
-          </Button>
-        </div>
-      </header>
-      <div className="list-body">
-        <section>
-          <div className="search-field small">
-            <Search size={17} />
-            <input
+        </Group>
+      </ScrollArea>
+      <Grid gap="xl">
+        <Grid.Col span={{ base: 12, lg: 8 }}>
+          <Stack>
+            <TextInput
               aria-label="Search this list"
-              placeholder="Find a title in this list…"
+              placeholder="Search this list"
+              leftSection={<Search size={17} />}
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(event) => setSearch(event.target.value)}
             />
-          </div>
-          {filtered.length ? (
-            <div className="list-entries">
-              {filtered.map((entry, index) => {
-                const e = byId.get(fieldText(entry.data.titleId));
-                return (
-                  <article
-                    key={entry.id}
-                    data-item-id={entry.id}
-                    className={`list-entry ${hover === entry.id ? "drag-over" : ""}`}
-                  >
-                    <span className="entry-number">{fieldText(index + 1).padStart(2, "0")}</span>
-                    {editable && (
-                      <button
-                        aria-label={`Drag to reorder ${e?.title ?? "title"}`}
-                        className="drag-handle"
-                        onPointerDown={(event) => {
-                          drag.current = entry.id;
-                          event.currentTarget.setPointerCapture(event.pointerId);
-                        }}
-                        onPointerMove={(event) => {
-                          if (!drag.current) return;
-                          const target = document
-                            .elementFromPoint(event.clientX, event.clientY)
-                            ?.closest("[data-item-id]")
-                            ?.getAttribute("data-item-id");
-                          setHover(target ?? "");
-                        }}
-                        onPointerUp={(event) => {
-                          if (drag.current && hover && hover !== drag.current)
-                            move(drag.current, hover);
-                          drag.current = null;
-                          setHover("");
-                          event.currentTarget.releasePointerCapture(event.pointerId);
-                        }}
-                        onPointerCancel={() => {
-                          drag.current = null;
-                          setHover("");
-                        }}
+            <ScrollArea h="32rem">
+              <Stack>
+                {filtered.length ? (
+                  filtered.map((entry) => {
+                    const e = byId.get(fieldText(entry.data.titleId)),
+                      index = entries.findIndex((item) => item.id === entry.id),
+                      status = statuses.get(fieldText(entry.data.titleId));
+                    return (
+                      <Paper
+                        component="article"
+                        key={entry.id}
+                        data-item-id={entry.id}
+                        className="list-entry"
+                        withBorder
+                        p="md"
+                        bg={hover === entry.id ? "dark.5" : undefined}
                       >
-                        <GripVertical size={18} />
-                      </button>
-                    )}
-                    <Link
-                      to="/title/$id"
-                      params={{ id: fieldText(entry.data.titleId) }}
-                      className="entry-content"
-                    >
-                      <Poster entity={e} slot="thumb" />
-                      <div>
-                        <h3>{e?.title ?? "Title details arriving"}</h3>
-                        <p>
-                          {e?.year ?? "—"} · {e?.kind === "tv" ? "TV series" : "Film"}
-                        </p>
-                        <span className="entry-tags">
-                          {statuses.get(entry.data.titleId as string)?.seen === true && (
-                            <span>
-                              <Eye size={10} />
-                              Seen
-                            </span>
+                        <Stack gap="sm">
+                          <Group wrap="nowrap" align="flex-start">
+                            <Text size="sm" c="dimmed">
+                              {index + 1}
+                            </Text>
+                            {editable && (
+                              <ActionIcon
+                                aria-label={`Drag to reorder ${e?.title ?? "title"}`}
+                                className="list-drag-handle"
+                                onPointerDown={(event) => {
+                                  drag.current = entry.id;
+                                  event.currentTarget.setPointerCapture(event.pointerId);
+                                }}
+                                onPointerMove={(event) => {
+                                  if (!drag.current) return;
+                                  setHover(
+                                    document
+                                      .elementFromPoint(event.clientX, event.clientY)
+                                      ?.closest("[data-item-id]")
+                                      ?.getAttribute("data-item-id") ?? "",
+                                  );
+                                }}
+                                onPointerUp={(event) => {
+                                  if (drag.current && hover && hover !== drag.current)
+                                    move(drag.current, hover);
+                                  drag.current = null;
+                                  setHover("");
+                                  event.currentTarget.releasePointerCapture(event.pointerId);
+                                }}
+                                onPointerCancel={() => {
+                                  drag.current = null;
+                                  setHover("");
+                                }}
+                              >
+                                <GripVertical size={18} />
+                              </ActionIcon>
+                            )}
+                            <Anchor
+                              className="entry-content"
+                              renderRoot={(props) => (
+                                <Link
+                                  {...props}
+                                  to="/title/$id"
+                                  params={{ id: fieldText(entry.data.titleId) }}
+                                />
+                              )}
+                              c="inherit"
+                              underline="hover"
+                              flex={1}
+                            >
+                              <Group wrap="nowrap" align="flex-start">
+                                <Box w="3.5rem" miw="3.5rem">
+                                  <Poster entity={e} slot="thumb" />
+                                </Box>
+                                <Stack gap="xs" flex={1} miw={0}>
+                                  <Title order={3} h="2.8em" lineClamp={2}>
+                                    {e?.title ?? "Title details"}
+                                  </Title>
+                                  <Text size="sm" c="dimmed">
+                                    {e?.year ?? "—"} · {e?.kind === "tv" ? "TV series" : "Movie"}
+                                  </Text>
+                                  <Stack gap={0} h="3rem">
+                                    <Box h="1.5rem">
+                                      {status?.seen === true && (
+                                        <Badge variant="light" leftSection={<Eye size={10} />}>
+                                          Seen
+                                        </Badge>
+                                      )}
+                                    </Box>
+                                    <Box h="1.5rem">
+                                      {["liked", "meh", "disliked"].includes(
+                                        fieldText(status?.sentiment),
+                                      ) && (
+                                        <Badge variant="light" leftSection={<Heart size={10} />}>
+                                          {fieldText(status?.sentiment)}
+                                        </Badge>
+                                      )}
+                                    </Box>
+                                  </Stack>
+                                  <Text
+                                    size="sm"
+                                    c="dimmed"
+                                    lineClamp={2}
+                                    h="3.1em"
+                                    visibleFrom="sm"
+                                  >
+                                    {e?.overview ?? ""}
+                                  </Text>
+                                </Stack>
+                              </Group>
+                            </Anchor>
+                          </Group>
+                          {editable && (
+                            <Group justify="flex-end" gap="xs">
+                              <ActionIcon
+                                aria-label={`Move ${e?.title} up`}
+                                disabled={index === 0}
+                                onClick={() => move(entry.id, entries[index - 1]?.id ?? null)}
+                              >
+                                <ArrowUp size={16} />
+                              </ActionIcon>
+                              <ActionIcon
+                                aria-label={`Move ${e?.title} down`}
+                                disabled={index === entries.length - 1}
+                                onClick={() => move(entry.id, entries[index + 2]?.id ?? null)}
+                              >
+                                <ArrowDown size={16} />
+                              </ActionIcon>
+                              <ActionIcon
+                                color="red"
+                                aria-label={`Remove ${e?.title}`}
+                                onClick={() =>
+                                  void send(
+                                    { type: "list.remove", listId, itemId: entry.id },
+                                    userId,
+                                  ).catch(report)
+                                }
+                              >
+                                <Trash2 size={16} />
+                              </ActionIcon>
+                            </Group>
                           )}
-                          {["liked", "meh", "disliked"].includes(
-                            fieldText(statuses.get(entry.data.titleId as string)?.sentiment),
-                          ) && (
-                            <span>
-                              <Heart size={10} />
-                              {fieldText(statuses.get(entry.data.titleId as string)?.sentiment)}
-                            </span>
-                          )}
-                        </span>
-                        {e?.overview && <small>{e.overview}</small>}
-                      </div>
-                    </Link>
-                    {editable && (
-                      <div className="entry-actions">
-                        <button
-                          aria-label={`Move ${e?.title} up`}
-                          disabled={index === 0}
-                          onClick={() => move(entry.id, entries[index - 1]?.id ?? null)}
-                        >
-                          <ArrowUp size={16} />
-                        </button>
-                        <button
-                          aria-label={`Move ${e?.title} down`}
-                          disabled={index === entries.length - 1}
-                          onClick={() => move(entry.id, entries[index + 2]?.id ?? null)}
-                        >
-                          <ArrowDown size={16} />
-                        </button>
-                        <button
-                          aria-label={`Remove ${e?.title}`}
+                        </Stack>
+                      </Paper>
+                    );
+                  })
+                ) : (
+                  <Empty title={search ? "No matching titles" : "No titles yet"}>
+                    {search ? "Try another search." : "Add a movie or TV show to this list."}
+                  </Empty>
+                )}
+              </Stack>
+            </ScrollArea>
+          </Stack>
+        </Grid.Col>
+        <Grid.Col span={{ base: 12, lg: 4 }}>
+          <Stack>
+            <Title order={2}>Collaborators</Title>
+            <Text size="sm" c="dimmed">
+              {collaborators.length} members
+            </Text>
+            <ScrollArea h="12rem">
+              <Stack>
+                {collaborators.map((member) => {
+                  const user = users.find((u) => u.id === member.data.userId);
+                  return (
+                    <Group key={member.id} justify="space-between" wrap="nowrap">
+                      <Anchor
+                        renderRoot={(props) => (
+                          <Link
+                            {...props}
+                            to="/profile/$userId"
+                            params={{ userId: fieldText(member.data.userId) }}
+                          />
+                        )}
+                        c="inherit"
+                      >
+                        <Group wrap="nowrap">
+                          <Avatar size="sm">{user?.title[0] ?? "?"}</Avatar>
+                          <Stack gap={0}>
+                            <Text size="sm" truncate>
+                              {user?.title ?? "Member"}
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              {fieldText(member.data.role)}
+                            </Text>
+                          </Stack>
+                        </Group>
+                      </Anchor>
+                      {owner && member.data.role !== "owner" && (
+                        <ActionIcon
+                          color="red"
+                          aria-label={`Remove ${user?.title} as collaborator`}
                           onClick={() =>
                             void send(
-                              { type: "list.remove", listId, itemId: entry.id },
+                              {
+                                type: "list.member.remove",
+                                listId,
+                                userId: fieldText(member.data.userId),
+                              },
                               userId,
                             ).catch(report)
                           }
                         >
                           <Trash2 size={16} />
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <Empty
-              title={
-                search ? "No matches in this collection." : "The opening credits are still rolling."
-              }
-            >
-              {search ? "Try another title." : "Add the first film or series and set the mood."}
-            </Empty>
-          )}
-        </section>
-        <aside className="list-sidebar">
-          <h3>Good company.</h3>
-          <p>{collaborators.length} people making this collection.</p>
-          {collaborators.map((m) => {
-            const u = users.find((u) => u.id === m.data.userId);
-            return (
-              <div className="collaborator-row" key={m.id}>
-                <Link to="/profile/$userId" params={{ userId: fieldText(m.data.userId) }}>
-                  <span className="avatar">{u?.title.slice(0, 1) ?? "?"}</span>
-                  <span>
-                    {u?.title ?? "Movie lover"}
-                    <small>{fieldText(m.data.role)}</small>
-                  </span>
-                </Link>
-                {owner && m.data.role !== "owner" && (
-                  <button
-                    aria-label={`Remove ${u?.title} as collaborator`}
-                    onClick={() =>
-                      void send(
-                        { type: "list.member.remove", listId, userId: fieldText(m.data.userId) },
-                        userId,
-                      ).catch(report)
-                    }
-                  >
-                    <XIcon />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          <h3 className="recent-title">The latest edits.</h3>
-          {activities
-            .filter((a) => a.data.targetId === listId)
-            .slice(0, 8)
-            .map((a) => (
-              <p className="recent-edit" key={a.id}>
-                {users.find((u) => u.id === a.data.userId)?.title ?? "Someone"} {a.title}
-                <small>{new Date(fieldText(a.data.createdAt)).toLocaleDateString()}</small>
-              </p>
-            ))}
-          {editable && (
-            <p className="field-note">
-              Drag a handle to reorder, or use the arrows. Every change is shared automatically.
-            </p>
-          )}
-        </aside>
-      </div>
+                        </ActionIcon>
+                      )}
+                    </Group>
+                  );
+                })}
+              </Stack>
+            </ScrollArea>
+            <Divider />
+            <Title order={2}>Recent edits</Title>
+            <ScrollArea h="16rem">
+              <Stack>
+                {activities
+                  .filter((a) => a.data.targetId === listId)
+                  .slice(0, 8)
+                  .map((a) => (
+                    <Stack gap={0} key={a.id}>
+                      <ActivityCaption
+                        actorId={fieldText(a.data.userId)}
+                        actorName={users.find((u) => u.id === a.data.userId)?.title ?? "Member"}
+                        action={a.title}
+                      />
+                      <Text size="xs" c="dimmed">
+                        {new Date(fieldText(a.data.createdAt)).toLocaleDateString()}
+                      </Text>
+                    </Stack>
+                  ))}
+              </Stack>
+            </ScrollArea>
+            {editable && (
+              <Text size="sm" c="dimmed">
+                Drag a handle or use the arrows to reorder titles.
+              </Text>
+            )}
+          </Stack>
+        </Grid.Col>
+      </Grid>
       {nextPage && (
         <Button
-          variant="outline"
+          variant="default"
           onClick={() => void loadSocial("list", listId, nextPage).catch(report)}
         >
           Load more titles
         </Button>
       )}
       <ListEditor open={edit} setOpen={setEdit} userId={userId} list={list} />
-      <Sheet
-        open={invite}
-        onOpenChange={setInvite}
-        title="Good films. Good company."
-        description="Invite someone to help shape this collection."
-      >
-        <div className="sheet-body list-picker">
+      <Drawer opened={invite} onClose={() => setInvite(false)} title="Invite members">
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Invited members can edit this list.
+          </Text>
           {invitations
             .filter((i) => i.data.listId === listId && i.data.state === "pending")
             .map((inv) => (
-              <div className="collaborator-row" key={inv.id}>
-                <span>
-                  {users.find((u) => u.id === inv.data.userId)?.title ?? "A movie lover"}
-                  <small>Invitation pending</small>
-                </span>
+              <Stack key={inv.id} gap="xs">
+                <Text>{users.find((u) => u.id === inv.data.userId)?.title ?? "Member"}</Text>
+                <Text size="sm" c="dimmed">
+                  Invitation pending
+                </Text>
                 <Button
-                  variant="ghost"
-                  size="small"
+                  variant="subtle"
                   onClick={() =>
                     void send(
                       { type: "list.member.remove", listId, userId: fieldText(inv.data.userId) },
@@ -524,7 +650,7 @@ export function ListDetail({ userId }: { userId: string }) {
                 >
                   Cancel invitation
                 </Button>
-              </div>
+              </Stack>
             ))}
           {users
             .filter(
@@ -538,8 +664,13 @@ export function ListDetail({ userId }: { userId: string }) {
                 ),
             )
             .map((u) => (
-              <button
+              <NavLink
+                component="button"
                 key={u.id}
+                label={u.title}
+                description={`@${fieldText(u.data.username ?? "member")}`}
+                leftSection={<Avatar size="sm">{u.title[0]}</Avatar>}
+                rightSection={<UserPlus size={17} />}
                 onClick={() =>
                   void send({ type: "list.invite", listId, userId: u.id }, userId)
                     .then(() => {
@@ -548,17 +679,10 @@ export function ListDetail({ userId }: { userId: string }) {
                     })
                     .catch(report)
                 }
-              >
-                <span className="avatar">{u.title[0]}</span>
-                <span>
-                  {u.title}
-                  <small>@{fieldText(u.data.username ?? "movie-lover")}</small>
-                </span>
-                <UserPlus size={17} />
-              </button>
+              />
             ))}
-        </div>
-      </Sheet>
+        </Stack>
+      </Drawer>
       <AddTitles
         open={add}
         setOpen={setAdd}
@@ -566,11 +690,8 @@ export function ListDetail({ userId }: { userId: string }) {
         userId={userId}
         existing={entries.map((e) => fieldText(e.data.titleId))}
       />
-    </div>
+    </Stack>
   );
-}
-function XIcon() {
-  return <Trash2 size={14} />;
 }
 function AddTitles({
   open,
@@ -610,48 +731,44 @@ function AddTitles({
     };
   }, [q, open]);
   return (
-    <Sheet
-      open={open}
-      onOpenChange={setOpen}
-      title="One more for the list."
-      description="Search films and series to find the perfect addition."
-    >
-      <div className="sheet-body list-picker">
-        <label>
-          Find a title
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="What belongs here?"
-          />
-        </label>
-        {[...movies, ...tv]
-          .filter((e) => e.title.toLowerCase().includes(q.toLowerCase()))
-          .slice(0, 30)
-          .map((e) => (
-            <button
-              key={e.id}
-              disabled={existing.includes(e.id)}
-              onClick={() =>
-                void send({ type: "list.add", listId, titleId: e.id }, userId).catch(report)
-              }
-            >
-              <span>
-                {e.title}
-                <small>
-                  {e.year} · {e.kind === "tv" ? "Series" : "Film"}
-                </small>
-              </span>
-              {existing.includes(e.id) ? <Check size={17} /> : <Plus size={17} />}
-            </button>
-          ))}
-        <Button variant="outline" asChild>
-          <Link to="/search">
-            Explore the whole catalog
-            <ArrowUpRight size={15} />
-          </Link>
+    <Drawer opened={open} onClose={() => setOpen(false)} title="Add titles">
+      <Stack>
+        <TextInput
+          label="Find a title"
+          value={q}
+          onChange={(event) => setQ(event.target.value)}
+          placeholder="Search movies and TV shows"
+        />
+        <ScrollArea h="24rem">
+          <Stack>
+            {[...movies, ...tv]
+              .filter((e) => e.title.toLowerCase().includes(q.toLowerCase()))
+              .slice(0, 30)
+              .map((e) => (
+                <NavLink
+                  component="button"
+                  key={e.id}
+                  disabled={existing.includes(e.id)}
+                  aria-disabled={existing.includes(e.id)}
+                  label={e.title}
+                  description={`${e.year ?? "—"} · ${e.kind === "tv" ? "Series" : "Movie"}`}
+                  rightSection={existing.includes(e.id) ? <Check size={17} /> : <Plus size={17} />}
+                  onClick={() =>
+                    void send({ type: "list.add", listId, titleId: e.id }, userId).catch(report)
+                  }
+                />
+              ))}
+          </Stack>
+        </ScrollArea>
+        <Button
+          renderRoot={(props) => <Link {...props} to="/search" />}
+
+          variant="default"
+          rightSection={<ArrowUpRight size={15} />}
+        >
+          Search catalog
         </Button>
-      </div>
-    </Sheet>
+      </Stack>
+    </Drawer>
   );
 }

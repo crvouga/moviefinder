@@ -11,7 +11,7 @@ async function register(page: Page, destination = "/") {
   await setTestUsername(page, "Cinema Friend", `friend_${suffix}`);
   await page.reload();
   if (destination === "/") {
-    await expect(page.getByRole("heading", { name: "Find your next obsession." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Discover" })).toBeVisible();
     await expect(page.locator(".discovery-slide").first()).toBeVisible();
   } else
     await expect(page).toHaveURL(new RegExp(destination.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -36,7 +36,7 @@ test("registration, persistent session, discovery, tagging, details, and lists",
     "true",
   );
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Find your next obsession." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Discover" })).toBeVisible();
   await expect(
     page.locator(".swiper-slide-active").getByRole("button", { name: "Like", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
@@ -47,14 +47,14 @@ test("registration, persistent session, discovery, tagging, details, and lists",
     "aria-pressed",
     "true",
   );
-  await expect(page.getByText("The little details.")).toBeVisible();
+  await expect(page.getByText("Details")).toBeVisible();
   await page.goBack();
   await expect(page.locator(".swiper-slide-active .slide-title h2")).toHaveText(title!);
   await page.goto("/lists");
   await page.getByRole("button", { name: "New list", exact: true }).click();
   await page.getByLabel("List name").fill("A very good movie night");
-  await page.getByLabel("A few words").fill("Our next shared watch.");
-  await page.getByRole("button", { name: "Create your list", exact: true }).click();
+  await page.getByLabel("Description").fill("Our next shared watch.");
+  await page.getByRole("button", { name: "Create list", exact: true }).click();
   await expect(page.getByRole("heading", { name: "A very good movie night" })).toBeVisible();
   await page
     .getByRole("link")
@@ -90,7 +90,7 @@ test("add-to-list form stays responsive while typing, creating, closing and reop
   await register(page);
   const slide = page.locator(".swiper-slide-active");
   const initialTitle = await slide.locator("h2").textContent();
-  const drawer = page.getByRole("dialog", { name: "Save for a good night" });
+  const drawer = page.getByRole("dialog", { name: "Add to list" });
   await slide.getByRole("button", { name: "Add to list" }).click();
   await drawer.getByRole("button", { name: "Create a list", exact: true }).click();
   expect(nativeDialogs).toEqual([]);
@@ -197,11 +197,14 @@ test("searches catalog and users, filters discovery, and edits a public profile"
     .fill("Fight");
   await expect(page.getByRole("heading", { name: "Fight Club", exact: true })).toBeVisible();
   await page.goto("/");
-  await page.getByRole("button", { name: "TV shows", exact: true }).click();
+  await page
+    .getByRole("radiogroup", { name: "Title type" })
+    .getByText("TV shows", { exact: true })
+    .click();
   await expect(page.locator(".swiper-slide-active .slide-title h2")).toHaveText("Game of Thrones");
   await page.goto("/profile");
   await page.getByRole("button", { name: "Edit profile", exact: true }).click();
-  await page.getByLabel("Display name", { exact: true }).fill("The Film Friend");
+  await page.getByRole("textbox", { name: "Display name", exact: true }).fill("The Film Friend");
   await page.getByLabel("About you").fill("One more episode. Always.");
   await page.getByRole("button", { name: "Save profile", exact: true }).click();
   await expect(page.getByRole("heading", { name: "The Film Friend", exact: true })).toBeVisible();
@@ -266,7 +269,7 @@ test("composes mobile-friendly filters and keeps optimistic state consistent aft
       .evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
   await page.getByLabel("Min. rating", { exact: true }).fill("8");
-  await page.getByRole("button", { name: "Find my next watch", exact: true }).click();
+  await page.getByRole("button", { name: "Apply filters", exact: true }).click();
   await expect(page).toHaveURL(/ratingMin=8/);
   await expect(page.locator(".swiper-slide-active .slide-title h2")).toBeVisible();
   const like = page
@@ -312,16 +315,20 @@ test("persists saved feeds, public list copies, and collaboration invitations th
 }) => {
   await register(page);
   await page.getByRole("button", { name: "Customize feed filters" }).click();
-  page.once("dialog", (dialog) => dialog.accept("My evening picks"));
   await page.getByRole("button", { name: "Save feed", exact: true }).click();
+  await page.getByRole("textbox", { name: "Feed name", exact: true }).fill("My evening picks");
+  await page
+    .getByRole("dialog", { name: "Save feed", exact: true })
+    .getByRole("button", { name: "Save feed", exact: true })
+    .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.goto("/profile");
-  await page.getByRole("button", { name: "Saved feeds", exact: true }).click();
+  await page.getByRole("tab", { name: "Saved feeds", exact: true }).click();
   await expect(page.getByRole("link", { name: "My evening picks", exact: true })).toBeVisible();
   await page.goto("/lists");
   await page.getByRole("button", { name: "New list", exact: true }).click();
   await page.getByLabel("List name").fill("A shared UI collection");
-  await page.getByRole("button", { name: "Create your list", exact: true }).click();
+  await page.getByRole("button", { name: "Create list", exact: true }).click();
   await page
     .getByRole("link")
     .filter({ has: page.getByRole("heading", { name: "A shared UI collection", exact: true }) })
@@ -345,7 +352,7 @@ test("persists saved feeds, public list copies, and collaboration invitations th
     await register(friend);
     const session = await (await friend.request.get("/api/auth/get-session")).json();
     await page.reload();
-    await page.getByRole("button", { name: "Invite friends", exact: true }).click();
+    await page.getByRole("button", { name: "Invite members", exact: true }).click();
     await page
       .getByRole("dialog")
       .getByRole("button")
@@ -463,7 +470,7 @@ test("starts data reads on hover, focus and press before navigating, and aborts 
 }) => {
   await register(page);
   await page.goto("/search");
-  await expect(page.getByRole("heading", { name: "What are you in the mood for?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Search", exact: true })).toBeVisible();
   for (const [index, type] of ["pointerover", "focusin", "pointerdown"].entries()) {
     const id = `tmdb:movie:${91000 + index}`;
     const request = page.waitForRequest(
@@ -566,7 +573,7 @@ test("opens cached neighbour graphs and supports back/forward while detail respo
       timeout: 500,
     });
     await expect(page.locator(".detail-intro h1")).toHaveText("Edward Norton");
-    await expect(page.getByRole("heading", { name: "A career in stories." })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Filmography" })).toBeVisible({
       timeout: 500,
     });
     await expect(page.locator(".detail-page")).toHaveAttribute("data-content-ready", "true");
@@ -578,11 +585,17 @@ test("opens cached neighbour graphs and supports back/forward while detail respo
     const imageRequested = page.waitForRequest((r) => r.url().endsWith("/transition-artwork.jpg"));
     release();
     await imageRequested;
-    await expect(page.getByRole("heading", { name: "A career in stories." })).toBeVisible();
-    await expect(page.locator(".detail-hero img")).toHaveJSProperty("complete", false);
+    await expect(page.getByRole("heading", { name: "Filmography" })).toBeVisible();
+    await expect(page.locator('.detail-hero img[alt]:not([alt=""])')).toHaveJSProperty(
+      "complete",
+      false,
+    );
     await expect(page.locator(".detail-page")).toHaveAttribute("data-graph-scope", "full");
     releaseImage();
-    await expect(page.locator(".detail-hero img")).toHaveJSProperty("complete", true);
+    await expect(page.locator('.detail-hero img[alt]:not([alt=""])')).toHaveJSProperty(
+      "complete",
+      true,
+    );
   } finally {
     release();
     releaseImage();
@@ -610,11 +623,11 @@ test("all primary destinations open without waiting for API responses or additio
   });
   try {
     for (const [label, path, heading] of [
-      ["Search", "/search", "What are you in the mood for?"],
-      ["Collections", "/lists", "A list for every kind of night."],
-      ["Community", "/activity", "In good company."],
-      ["Your profile", "/profile", ""],
-      ["Discover", "/", "Find your next obsession."],
+      ["Search", "/search", "Search"],
+      ["Lists", "/lists", "Lists"],
+      ["Activity", "/activity", "Activity"],
+      ["Profile", "/profile", ""],
+      ["Discover", "/", "Discover"],
     ]) {
       await page.getByRole("link", { name: label!, exact: true }).first().click();
       await expect(page.locator("#main-content")).toHaveAttribute("data-route", path!, {
@@ -684,11 +697,11 @@ test("cold destinations commit before live queries mount, with bootstrap and all
       };
     });
     for (const [label, path, heading] of [
-      ["Collections", "/lists", "A list for every kind of night."],
-      ["Community", "/activity", "In good company."],
-      ["Your profile", "/profile", "Movie lover"],
-      ["Discover", "/", "Find your next obsession."],
-      ["Search", "/search", "What are you in the mood for?"],
+      ["Lists", "/lists", "Lists"],
+      ["Activity", "/activity", "Activity"],
+      ["Profile", "/profile", "Profile"],
+      ["Discover", "/", "Discover"],
+      ["Search", "/search", "Search"],
     ]) {
       // DOM activation also covers keyboard/programmatic link activation, without waiting on
       // Playwright's actionability frames that are intentionally held by this test.
@@ -785,11 +798,11 @@ test("cold pointer and keyboard navigation paints within 100ms at 4x CPU with ev
   });
   try {
     for (const [index, [label, path, heading]] of [
-      ["Collections", "/lists", "A list for every kind of night."],
-      ["Community", "/activity", "In good company."],
-      ["Your profile", "/profile", "Movie lover"],
-      ["Discover", "/", "Find your next obsession."],
-      ["Search", "/search", "What are you in the mood for?"],
+      ["Lists", "/lists", "Lists"],
+      ["Activity", "/activity", "Activity"],
+      ["Profile", "/profile", "Profile"],
+      ["Discover", "/", "Discover"],
+      ["Search", "/search", "Search"],
     ].entries()) {
       await page.evaluate(
         ({ path, heading }) => {
@@ -836,7 +849,7 @@ test("cold pointer and keyboard navigation paints within 100ms at 4x CPU with ev
       );
       times.push({ path: path!, ms: Math.round(ms) });
       expect(ms, `Input to destination rendering opportunity for ${path}`).toBeLessThan(100);
-      await expect(link).toHaveClass(/active/);
+      await expect(link).toHaveAttribute("aria-current", "page");
     }
     expect(scripts).toEqual([]);
     await test.info().attach("cold-navigation-timings", {
@@ -860,9 +873,7 @@ for (const saveData of [false, true]) {
       });
     }, saveData);
     await register(page, "/search");
-    await expect(
-      page.getByRole("heading", { name: "What are you in the mood for?" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Search", exact: true })).toBeVisible();
     const requested = new Set<string>();
     page.on("request", (request) => {
       const path = decodeURIComponent(new URL(request.url()).pathname);
@@ -929,10 +940,13 @@ test("applies discovery filters immediately while the next feed response is bloc
       new URL(request.url()).pathname === "/api/discover" &&
       new URL(request.url()).searchParams.get("type") === "tv",
   );
-  await page.getByRole("button", { name: "TV shows", exact: true }).click();
+  await page
+    .getByRole("radiogroup", { name: "Title type" })
+    .getByText("TV shows", { exact: true })
+    .click();
   await requested;
   await expect(page).toHaveURL(/type=tv/);
-  await expect(page.getByRole("button", { name: "TV shows", exact: true })).toHaveClass("active");
+  await expect(page.getByRole("radio", { name: "TV shows", exact: true })).toBeChecked();
   await expect(page.getByRole("heading", { name: original!, exact: true })).toHaveCount(0);
   release();
   await expect(page.locator(".swiper-slide-active .slide-title h2")).toHaveText("Game of Thrones");
@@ -985,4 +999,114 @@ test("production browsing does not install or expose development diagnostics", a
     return { status: response.status, serverTiming: response.headers.get("Server-Timing") };
   });
   expect(response).toEqual({ status: 404, serverTiming: null });
+});
+
+test("Mantine screens and drawers meet automated accessibility checks without layout overflow", async ({
+  page,
+}, info) => {
+  const { default: AxeBuilder } = await import("@axe-core/playwright");
+  const audit = async () => {
+    // Audit the settled interface, including Mantine's opening transitions.
+    await page.evaluate(() =>
+      Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+          .map((animation) => animation.finished.catch(() => {})),
+      ),
+    );
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+      .analyze();
+    expect(
+      results.violations.map(({ id, nodes }) => ({
+        id,
+        elements: nodes.map((node) => ({ target: node.target, reason: node.failureSummary })),
+      })),
+    ).toEqual([]);
+    expect(
+      await page.locator("body").evaluate((body) => body.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+  };
+  await page.goto("/auth");
+  await expect(page.getByRole("button", { name: "Sign in with Google" })).toBeEnabled();
+  await audit();
+  await register(page);
+  await audit();
+  for (const name of ["Mark as seen", "Like", "Meh", "Dislike"]) {
+    const reaction = page
+      .locator(".swiper-slide-active")
+      .getByRole("button", { name, exact: true });
+    await reaction.click();
+    await expect(reaction).toHaveAttribute("aria-pressed", "true");
+    await audit();
+  }
+  await page.getByRole("button", { name: "Customize feed filters" }).click();
+  await expect(page.getByRole("dialog", { name: "Feed filters" })).toBeVisible();
+  await audit();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Customize feed filters" })).toBeFocused();
+  for (const [path, heading] of [
+    ["/search?q=Fight", "Search"],
+    ["/lists", "Lists"],
+    ["/activity", "Activity"],
+    ["/profile", "Cinema Friend"],
+    ["/title/tmdb%3Amovie%3A550", "Fight Club"],
+    ["/title/tmdb%3Atv%3A1399", "Game of Thrones"],
+    ["/title/tmdb%3Atv%3A1399%3Aseason%3A1", "Season 1"],
+    ["/title/tmdb%3Atv%3A1399%3Aseason%3A1%3Aepisode%3A1", "Winter Is Coming"],
+    ["/title/tmdb%3Aperson%3A819", "Edward Norton"],
+    ["/missing-page", "Page not found"],
+  ]) {
+    await page.goto(path!);
+    await expect(page.getByRole("heading", { name: heading!, exact: true }).first()).toBeVisible();
+    await audit();
+    await page.screenshot({
+      path: `test-results/${info.project.name}-${heading!.toLowerCase().replaceAll(" ", "-")}.png`,
+      fullPage: true,
+    });
+  }
+});
+
+test("mobile navigation, keyboard tabs, date filters and reduced motion use Mantine behavior", async ({
+  page,
+  isMobile,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await register(page);
+  if (isMobile) {
+    await expect(
+      page.getByRole("navigation", { name: "Main navigation", exact: true }),
+    ).toBeHidden();
+    await page.getByRole("button", { name: "Toggle navigation" }).click();
+    await page
+      .getByRole("navigation", { name: "Main navigation", exact: true })
+      .getByRole("link", { name: "Lists", exact: true })
+      .click();
+    await expect(
+      page.getByRole("navigation", { name: "Main navigation", exact: true }),
+    ).toBeHidden();
+  } else await page.goto("/lists");
+  await page.getByRole("tab", { name: "Your lists", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Saved lists", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("tabpanel")).toBeVisible();
+  await page.goto("/");
+  await page.getByRole("button", { name: "Customize feed filters" }).click();
+  await page.getByLabel("Released after", { exact: true }).fill("1990-01-01");
+  await page.getByLabel("Released after", { exact: true }).press("Tab");
+  await page.getByLabel("Released before", { exact: true }).fill("2026-12-31");
+  await page.getByLabel("Released before", { exact: true }).press("Tab");
+  await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+  await expect(page).toHaveURL(/dateMin=1990-01-01/);
+  await expect(page).toHaveURL(/dateMax=2026-12-31/);
+  await expect(page.locator(".swiper-slide-active")).toBeVisible();
+  await page.getByRole("button", { name: "Next title", exact: true }).click();
+  await expect(page.locator(".discovery-swiper .swiper-wrapper")).toHaveCSS(
+    "transition-duration",
+    "0s",
+  );
 });
