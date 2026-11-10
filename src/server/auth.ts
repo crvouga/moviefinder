@@ -5,7 +5,8 @@ import { username } from "better-auth/plugins";
 import type { Database } from "./db";
 import type { Config } from "./config";
 import * as schema from "./db/schema";
-import { authCookiePrefix, authRelay, withRelayStateCookies } from "./auth-relay";
+import { eq } from "drizzle-orm";
+import { authCookiePrefix, authRelay, relayProviderId, withRelayStateCookies } from "./auth-relay";
 export function createAuth(db: Database, config: Config) {
   const auth = betterAuth({
     appName: "MovieFinder",
@@ -41,9 +42,40 @@ export function createAuth(db: Database, config: Config) {
     ],
     user: { additionalFields: { bio: { type: "string", required: false, defaultValue: "" } } },
     account: {
-      accountLinking: { enabled: false },
+      // Linking is enabled only so a password-era account can be claimed. The account hook
+      // below rejects every other link, so an identity is still keyed by (issuer, subject).
+      accountLinking: {
+        enabled: true,
+        trustedProviders: [relayProviderId],
+        requireLocalEmailVerified: false,
+      },
       encryptOAuthTokens: true,
       storeStateStrategy: "database",
+    },
+    databaseHooks: {
+      account: {
+        create: {
+          async before(created) {
+            const existing = await db
+              .select({ id: schema.account.id, providerId: schema.account.providerId })
+              .from(schema.account)
+              .where(eq(schema.account.userId, created.userId));
+            if (existing.length === 0) return;
+            // Password sign-in is disabled, so a password-only account is unusable. A verified
+            // relay email claims it: remove the password and end its sessions, keep its data.
+            if (
+              created.providerId !== relayProviderId ||
+              existing.some((row) => row.providerId !== "credential")
+            )
+              return false;
+            await db.transaction(async (tx) => {
+              await tx.delete(schema.session).where(eq(schema.session.userId, created.userId));
+              await tx.delete(schema.account).where(eq(schema.account.userId, created.userId));
+            });
+            log("auth", "Claimed password-era account with Google sign-in");
+          },
+        },
+      },
     },
     session: { expiresIn: 60 * 60 * 24 * 14, updateAge: 60 * 60 * 24 },
     plugins: [
