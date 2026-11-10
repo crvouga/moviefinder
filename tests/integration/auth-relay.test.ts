@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { createDatabase } from "../../src/server/db";
 import { createApplication } from "../../src/server/app";
 import { readConfig } from "../../src/server/config";
-import { account, user, verification } from "../../src/server/db/schema";
+import { account, session, user, verification } from "../../src/server/db/schema";
 import { fixtureUpstream } from "../fixtures/catalog";
 
 const databaseURL = process.env.TEST_DATABASE_URL;
@@ -385,9 +385,9 @@ describe("shared relay public OIDC code flow", () => {
     expect(Boolean(sessionCookie(response))).toBe(false);
     expect(response.headers.get("location")).toContain("socialError=1");
   });
-  it("does not link an existing email account automatically", async () => {
+  it("lets a verified Google sign-in claim a password-era account and keep its data", async () => {
     const email = `relay-existing-${crypto.randomUUID()}@example.test`;
-    // Existing password-era records must not be silently merged into a Google identity.
+    // Password sign-in is disabled, so these accounts can only be recovered through Google.
     const existingId = crypto.randomUUID();
     await db.insert(user).values({ id: existingId, email, name: "Existing member" });
     await db.insert(account).values({
@@ -395,11 +395,42 @@ describe("shared relay public OIDC code flow", () => {
       accountId: existingId,
       userId: existingId,
       providerId: "credential",
+      password: "legacy-password-hash",
     });
-    expect(Boolean(sessionCookie(await callback(await begin({ email }))))).toBe(false);
-    const [existing] = await db.select().from(user).where(eq(user.email, email));
-    const accounts = await db.select().from(account).where(eq(account.userId, existing!.id));
-    expect(accounts.map((row) => row.providerId)).toEqual(["credential"]);
+    await db.insert(session).values({
+      id: crypto.randomUUID(),
+      token: `legacy-${crypto.randomUUID()}`,
+      userId: existingId,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const subject = crypto.randomUUID();
+    const cookie = sessionCookie(await callback(await begin({ email, sub: subject })));
+    expect(Boolean(cookie)).toBe(true);
+    expect((await service.app.request("/api/state", { headers: { Cookie: cookie } })).status).toBe(
+      200,
+    );
+    const [claimed] = await db.select().from(user).where(eq(user.email, email));
+    expect(claimed).toMatchObject({ id: existingId, emailVerified: true });
+    const accounts = await db.select().from(account).where(eq(account.userId, existingId));
+    expect(accounts.map((row) => [row.providerId, row.accountId, row.password])).toEqual([
+      ["auth-relay", JSON.stringify([issuer, subject]), null],
+    ]);
+    const sessions = await db.select().from(session).where(eq(session.userId, existingId));
+    expect(sessions.every((row) => !row.token.startsWith("legacy-"))).toBe(true);
+    expect(sessions).toHaveLength(1);
+    // A later sign-in reuses the claimed account.
+    expect(Boolean(sessionCookie(await callback(await begin({ email, sub: subject }))))).toBe(true);
+  });
+  it("never lets another relay subject take over a Google-backed account by email", async () => {
+    const email = `relay-owned-${crypto.randomUUID()}@example.test`;
+    const first = crypto.randomUUID();
+    expect(Boolean(sessionCookie(await callback(await begin({ email, sub: first }))))).toBe(true);
+    const response = await callback(await begin({ email, sub: crypto.randomUUID() }));
+    expect(Boolean(sessionCookie(response))).toBe(false);
+    expect(response.headers.get("location")).toContain("socialError=1");
+    const [owner] = await db.select().from(user).where(eq(user.email, email));
+    const accounts = await db.select().from(account).where(eq(account.userId, owner!.id));
+    expect(accounts.map((row) => row.accountId)).toEqual([JSON.stringify([issuer, first])]);
   });
   it("rejects submitted ID tokens outside a bound authorization-code transaction", async () => {
     const response = await service.app.request("/api/auth/sign-in/social", {
